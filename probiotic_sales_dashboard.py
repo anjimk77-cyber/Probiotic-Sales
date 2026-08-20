@@ -70,7 +70,8 @@ PROBIOTIC_PREFIX = "PRO"
 LOGIN_USERNAME = "Lakshani"
 LOGIN_PASSWORD = "2000"
 LOGIN_BACKGROUND_IMAGE_URL = (
-    "https://images.unsplash.com/photo-1524704796725-9fc3044a58b2?auto=format&fit=crop&w=1740&q=80"
+    "https://images.unsplash.com/photo-1524704796725-9fc3044a58b2"
+    "?auto=format&fit=crop&w=1740&q=80&blur=60"
 )
 
 if "authenticated" not in st.session_state:
@@ -81,18 +82,14 @@ def _render_login_page():
         f"""
         <style>
         [data-testid="stAppViewContainer"] {{
-            background: transparent;
-        }}
-        [data-testid="stAppViewContainer"]::before {{
-            content: "";
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
             background-image: url("{LOGIN_BACKGROUND_IMAGE_URL}");
             background-size: cover;
             background-position: center;
-            filter: blur(8px);
-            transform: scale(1.08);
-            z-index: -1;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+        }}
+        [data-testid="stAppViewContainer"] > .main {{
+            background: transparent;
         }}
         [data-testid="stHeader"] {{
             background: rgba(0,0,0,0);
