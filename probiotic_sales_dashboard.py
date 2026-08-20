@@ -188,18 +188,57 @@ def _customer_code_for(cust_name, farm_name):
     return ""
 
 # =========================================================================
+# LOAD SALES DATA (loaded early — before the date picker — so the date
+# range selector can be bounded to the actual dates present in the Sales
+# Details sheet's "Date" column, instead of defaulting to today's date).
+# =========================================================================
+try:
+    df_sales = load_sales_data()
+except Exception as e:
+    st.error(f"❌ Could not connect to the Sales Details Google Sheet. Check sharing settings.\n\n{e}")
+    st.stop()
+
+if len(df_sales) == 0:
+    st.info("No sales records found in the Sales Details sheet.")
+    st.stop()
+
+df_sales = df_sales.copy()
+df_sales["Quantity"] = pd.to_numeric(df_sales["Quantity"], errors="coerce").fillna(0)
+df_sales["_ParsedDate"] = pd.to_datetime(df_sales["Date"], errors="coerce")
+
+_valid_sales_dates = df_sales["_ParsedDate"].dropna()
+if len(_valid_sales_dates) == 0:
+    st.error("❌ No valid dates found in the Sales Details sheet's 'Date' column.")
+    st.stop()
+
+_sales_min_date = _valid_sales_dates.min().date()
+_sales_max_date = _valid_sales_dates.max().date()
+
+# =========================================================================
 # DATE RANGE SELECTOR
+# Bounded (min_value/max_value) to the earliest and latest dates actually
+# present in the Sales Details "Date" column, so the user can't pick a
+# range with no possible data.
 # =========================================================================
 st.subheader("📅 Select Date Range")
 
-_default_start = date.today().replace(day=1)
-_default_end = date.today()
-
 col_d1, col_d2 = st.columns(2)
 with col_d1:
-    start_date = st.date_input("From", value=_default_start, key="probiotic_start_date")
+    start_date = st.date_input(
+        "From",
+        value=_sales_min_date,
+        min_value=_sales_min_date,
+        max_value=_sales_max_date,
+        key="probiotic_start_date",
+    )
 with col_d2:
-    end_date = st.date_input("To", value=_default_end, key="probiotic_end_date")
+    end_date = st.date_input(
+        "To",
+        value=_sales_max_date,
+        min_value=_sales_min_date,
+        max_value=_sales_max_date,
+        key="probiotic_end_date",
+    )
 
 if start_date > end_date:
     st.error("❌ 'From' date must be on or before 'To' date.")
@@ -295,22 +334,9 @@ running_farms["Customer Code"] = running_farms.apply(
 )
 
 # =========================================================================
-# LOAD SALES DATA AND FILTER TO PROBIOTIC ITEMS WITHIN THE DATE RANGE
+# FILTER SALES DATA TO PROBIOTIC ITEMS WITHIN THE SELECTED DATE RANGE
+# (df_sales was already loaded above, before the date picker.)
 # =========================================================================
-try:
-    df_sales = load_sales_data()
-except Exception as e:
-    st.error(f"❌ Could not connect to the Sales Details Google Sheet. Check sharing settings.\n\n{e}")
-    st.stop()
-
-if len(df_sales) == 0:
-    st.info("No sales records found in the Sales Details sheet.")
-    st.stop()
-
-df_sales = df_sales.copy()
-df_sales["Quantity"] = pd.to_numeric(df_sales["Quantity"], errors="coerce").fillna(0)
-df_sales["_ParsedDate"] = pd.to_datetime(df_sales["Date"], errors="coerce")
-
 _start_ts = pd.Timestamp(start_date)
 _end_ts = pd.Timestamp(end_date)
 
@@ -355,7 +381,7 @@ _zones_present = sorted(
 )
 
 _display_cols = ["Customer Name", "Farm Name with Code"] + _probiotic_items + ["Total"]
-_all_zone_tables = []  # collected for the combined download below
+_all_zone_tables = []  # list of (zone_name, DataFrame) — collected for the download below
 
 def _build_zone_table(zone_farms_df):
     _rows = []
@@ -386,25 +412,28 @@ if _zones_present:
             _zone_table = _build_zone_table(_zone_farms)
             st.markdown(f"**{_zone}** ({len(_zone_table)} running farm(s))")
             st.dataframe(_zone_table, use_container_width=True, hide_index=True)
-            _zone_table_for_export = _zone_table.copy()
-            _zone_table_for_export.insert(0, "Zone", _zone)
-            _all_zone_tables.append(_zone_table_for_export)
+            _all_zone_tables.append((_zone, _zone_table.copy()))
 else:
     st.info("No Zone information found on the customer list — showing unfiltered.")
     _table = _build_zone_table(running_farms)
     st.dataframe(_table, use_container_width=True, hide_index=True)
-    _table_for_export = _table.copy()
-    _table_for_export.insert(0, "Zone", "")
-    _all_zone_tables.append(_table_for_export)
+    _all_zone_tables.append(("All Farms", _table.copy()))
 
 # =========================================================================
-# DOWNLOAD — combined CSV across every zone table shown above.
+# DOWNLOAD — one CSV covering every zone table shown above, laid out as:
+#   Row 1: the selected date range
+#   Then, for each zone in turn: the zone name, its column headers, and
+#   its data rows — followed by a blank line before the next zone.
 # =========================================================================
 if _all_zone_tables:
     st.markdown("---")
-    _combined = pd.concat(_all_zone_tables, ignore_index=True)
     _csv_buffer = io.StringIO()
-    _combined.to_csv(_csv_buffer, index=False)
+    _csv_buffer.write(f"Selected Date Range,{start_date} to {end_date}\n")
+    _csv_buffer.write("\n")
+    for _zone_name, _zone_df in _all_zone_tables:
+        _csv_buffer.write(f"{_zone_name}\n")
+        _zone_df.to_csv(_csv_buffer, index=False)
+        _csv_buffer.write("\n")
     st.download_button(
         label="⬇️ Download as CSV",
         data=_csv_buffer.getvalue(),
