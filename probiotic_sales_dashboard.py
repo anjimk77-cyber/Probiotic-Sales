@@ -82,7 +82,8 @@ def _render_login_page():
         f"""
         <style>
         [data-testid="stAppViewContainer"] {{
-            background-image: url("{LOGIN_BACKGROUND_IMAGE_URL}");
+            background-image: linear-gradient(rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0.65)),
+                url("{LOGIN_BACKGROUND_IMAGE_URL}");
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
