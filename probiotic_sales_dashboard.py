@@ -70,7 +70,7 @@ PROBIOTIC_PREFIX = "PRO"
 LOGIN_USERNAME = "Lakshani"
 LOGIN_PASSWORD = "2000"
 LOGIN_BACKGROUND_IMAGE_URL = (
-    "https://images.unsplash.com/photo-1439792675105-701e6a4ab6f0"
+    "https://images.unsplash.com/photo-1541441056316-443fff347c40"
     "?auto=format&fit=crop&w=1740&q=80&blur=60"
 )
 
@@ -107,15 +107,15 @@ def _render_login_page():
             color: #ffffff !important;
             font-weight: 600;
         }}
-        .login-title {{
+        .login-title, .login-title * {{
             text-align: center;
-            color: #ffffff;
+            color: #ffffff !important;
             text-shadow: 0 2px 8px rgba(0,0,0,0.5);
             margin-bottom: 0.2rem;
         }}
-        .login-subtitle {{
+        .login-subtitle, .login-subtitle * {{
             text-align: center;
-            color: #f0f0f0;
+            color: #ffffff !important;
             text-shadow: 0 1px 6px rgba(0,0,0,0.5);
             margin-bottom: 1.6rem;
         }}
