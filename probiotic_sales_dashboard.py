@@ -70,7 +70,7 @@ PROBIOTIC_PREFIX = "PRO"
 LOGIN_USERNAME = "Lakshani"
 LOGIN_PASSWORD = "2000"
 LOGIN_BACKGROUND_IMAGE_URL = (
-    "https://images.unsplash.com/photo-1541441056316-443fff347c40"
+    "https://images.unsplash.com/photo-1625943553852-781c6dd46faa"
     "?auto=format&fit=crop&w=1740&q=80&blur=60"
 )
 
