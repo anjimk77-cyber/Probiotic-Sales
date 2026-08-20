@@ -127,7 +127,7 @@ def _render_login_page():
 
     _c1, _c2, _c3 = st.columns([1, 1.1, 1])
     with _c2:
-        st.markdown("<h1 class='login-title'>🧪 Probiotic Sales Dashboard</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 class='login-title'>Hi Welcome, 🧪 Probiotic Sales Dashboard</h1>", unsafe_allow_html=True)
         st.markdown("<p class='login-subtitle'>KMN Aqua Services — please sign in</p>", unsafe_allow_html=True)
         with st.form("login_form", clear_on_submit=False):
             _username = st.text_input("Username")
@@ -145,7 +145,7 @@ if not st.session_state["authenticated"]:
     _render_login_page()
     st.stop()
 
-st.markdown("<h3 style='text-align:center;'>Hi Welcome, Probiotic Sales Dashboard</h3>", unsafe_allow_html=True)
+#st.markdown("<h3 style='text-align:center;'>Hi Welcome, Probiotic Sales Dashboard</h3>", unsafe_allow_html=True)
 
 st.markdown("<h1 style='text-align: center;'>🧪 Probiotic Sales Dashboard</h1>",
             unsafe_allow_html=True)
