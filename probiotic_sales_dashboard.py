@@ -62,6 +62,93 @@ SALES_COLUMN_ORDER = [
 # Item No. prefix that identifies a Probiotic line item.
 PROBIOTIC_PREFIX = "PRO"
 
+# =========================================================================
+# LOGIN GATE
+# Standard username/password login screen with a blurred background image.
+# Nothing below this block runs until the user is authenticated.
+# =========================================================================
+LOGIN_USERNAME = "Lakshani"
+LOGIN_PASSWORD = "2000"
+LOGIN_BACKGROUND_IMAGE_URL = (
+    "https://images.unsplash.com/photo-1524704796725-9fc3044a58b2?auto=format&fit=crop&w=1740&q=80"
+)
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+def _render_login_page():
+    st.markdown(
+        f"""
+        <style>
+        [data-testid="stAppViewContainer"] {{
+            background: transparent;
+        }}
+        [data-testid="stAppViewContainer"]::before {{
+            content: "";
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-image: url("{LOGIN_BACKGROUND_IMAGE_URL}");
+            background-size: cover;
+            background-position: center;
+            filter: blur(8px);
+            transform: scale(1.08);
+            z-index: -1;
+        }}
+        [data-testid="stHeader"] {{
+            background: rgba(0,0,0,0);
+        }}
+        div[data-testid="stForm"] {{
+            background: rgba(255, 255, 255, 0.18);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            border-radius: 18px;
+            padding: 2.2rem 2rem 1.4rem 2rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+        }}
+        div[data-testid="stForm"] label p {{
+            color: #ffffff !important;
+            font-weight: 600;
+        }}
+        .login-title {{
+            text-align: center;
+            color: #ffffff;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            margin-bottom: 0.2rem;
+        }}
+        .login-subtitle {{
+            text-align: center;
+            color: #f0f0f0;
+            text-shadow: 0 1px 6px rgba(0,0,0,0.5);
+            margin-bottom: 1.6rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    _c1, _c2, _c3 = st.columns([1, 1.1, 1])
+    with _c2:
+        st.markdown("<h1 class='login-title'>🧪 Probiotic Sales Dashboard</h1>", unsafe_allow_html=True)
+        st.markdown("<p class='login-subtitle'>KMN Aqua Services — please sign in</p>", unsafe_allow_html=True)
+        with st.form("login_form", clear_on_submit=False):
+            _username = st.text_input("Username")
+            _password = st.text_input("Password", type="password")
+            _submitted = st.form_submit_button("🔐 Login", use_container_width=True)
+
+        if _submitted:
+            if _username == LOGIN_USERNAME and _password == LOGIN_PASSWORD:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("❌ Incorrect username or password.")
+
+if not st.session_state["authenticated"]:
+    _render_login_page()
+    st.stop()
+
+st.markdown("<h3 style='text-align:center;'>Hi Welcome, Probiotic Sales Dashboard</h3>", unsafe_allow_html=True)
+
 st.markdown("<h1 style='text-align: center;'>🧪 Probiotic Sales Dashboard</h1>",
             unsafe_allow_html=True)
 st.subheader("KMN Aqua Services")
