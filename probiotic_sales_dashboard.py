@@ -529,6 +529,143 @@ else:
         f"'{PROBIOTIC_PREFIX}'), Customer Code '{_pt_code}'."
     )
 
+    # ---- NEW SECTION: POND-WISE PROBIOTIC TIMELINE -------------------------
+    # Same selected Customer + Farm as the timeline above. One vertical "time
+    # frame" line (Started Date / After 30 days / After 60 Days / Today), one
+    # vertical line per started pond (its own Started / After 30 / After 60
+    # dates, ending in a circle showing that pond's DOC today — or its DOC at
+    # Full Harvest, same rule as the Marketing Manager view). Positions are
+    # proportional to the dates. Probiotic purchases are recorded per customer
+    # (not per pond), so they are drawn once, as blocks hanging off the time
+    # frame line. View-only; nothing is written anywhere.
+    import streamlit.components.v1 as _pt_components
+
+    st.markdown("---")
+    st.subheader("🗓️ Pond-wise Probiotic Timeline")
+
+    _ptw_today = pd.Timestamp(date.today())
+    _ptw_ponds = []
+    for _, _ptw_pr in _pt_latest.iterrows():
+        _ptw_start = _pt_pond_start(_ptw_pr)
+        if pd.isna(_ptw_start):
+            continue
+        _ptw_start = _ptw_start.normalize()
+        _ptw_end, _ptw_full = _ptw_today, False
+        _ptw_t2 = str(_ptw_pr.get("Harvest Type 2", "")).strip().lower()
+        _ptw_t1 = str(_ptw_pr.get("Harvest Type", "")).strip().lower()
+        _ptw_fd_str = ""
+        if "full" in _ptw_t2:
+            _ptw_fd_str = str(_ptw_pr.get("Harvest Date 2", "")).strip()
+        elif "full" in _ptw_t1:
+            _ptw_fd_str = str(_ptw_pr.get("Harvest Date", "")).strip()
+        if _ptw_fd_str:
+            _ptw_fd = pd.to_datetime(_ptw_fd_str, errors="coerce")
+            if pd.notna(_ptw_fd):
+                _ptw_end, _ptw_full = _ptw_fd.normalize(), True
+        _ptw_ponds.append({
+            "name": str(_ptw_pr.get("Pond Number", "")),
+            "start": _ptw_start,
+            "end": _ptw_end,
+            "full": _ptw_full,
+            "doc": (_ptw_end - _ptw_start).days,   # = DOC Today (or DOC at Full H)
+        })
+
+    _ptw_all_days = [p["start"] for p in _ptw_ponds] + list(_pt_by_day.keys())
+    _ptw_tmin = min(_ptw_all_days)
+    _ptw_tmax = max([_ptw_today] + [p["end"] for p in _ptw_ponds] + list(_pt_by_day.keys()))
+    _PPD, _Y0 = 8, 80                      # pixels per day, top offset
+    _AX, _BX = 170, 200                    # time-frame line x, probiotic blocks x
+    _POND_X0, _POND_DX = 560, 190
+    _ptw_y = lambda d: _Y0 + (d - _ptw_tmin).days * _PPD
+
+    _ptw_svg = []
+    def _ptw_text(x, y, txt, anchor="start", weight="normal", size=12, fill="#222", extra=""):
+        _ptw_svg.append(
+            f"<text x='{x}' y='{y}' text-anchor='{anchor}' font-weight='{weight}' font-size='{size}' "
+            f"fill='{fill}' {extra}>{_pt_esc(txt)}</text>"
+        )
+
+    # -- probiotic purchase blocks (collision-avoiding, connected to the axis)
+    _ptw_prev_bottom = _Y0 - 30
+    for _ptw_day in sorted(_pt_by_day):
+        _ptw_items = _pt_by_day[_ptw_day]
+        _ptw_yp = _ptw_y(_ptw_day)
+        _ptw_bh = 20 * (len(_ptw_items) + 1)
+        _ptw_top = max(_ptw_yp - 10, _ptw_prev_bottom + 12)
+        _ptw_prev_bottom = _ptw_top + _ptw_bh
+        _ptw_svg.append(f"<line x1='{_AX}' y1='{_ptw_yp}' x2='{_BX}' y2='{_ptw_top + 10}' stroke='#aaa'/>")
+        _ptw_svg.append(f"<circle cx='{_AX}' cy='{_ptw_yp}' r='3' fill='#555'/>")
+        _ptw_svg.append(f"<rect x='{_BX}' y='{_ptw_top}' width='250' height='20' fill='#e8eefb' stroke='#888'/>")
+        _ptw_text(_BX + 125, _ptw_top + 14, _ptw_day.strftime("%Y-%m-%d"), "middle", "bold")
+        for _k, (_ptw_item, _ptw_q) in enumerate(_ptw_items):
+            _ry = _ptw_top + 20 * (_k + 1)
+            _ptw_svg.append(f"<rect x='{_BX}' y='{_ry}' width='200' height='20' fill='#fff' stroke='#888'/>")
+            _ptw_svg.append(f"<rect x='{_BX + 200}' y='{_ry}' width='50' height='20' fill='#fff' stroke='#888'/>")
+            _ptw_text(_BX + 100, _ry + 14, _ptw_item, "middle")
+            _ptw_text(_BX + 244, _ry + 14, f"{_ptw_q:,.0f}", "end")
+
+    # -- time frame line (left): Started / After 30 / After 60 / Today
+    _ptw_ax_bottom = _ptw_y(_ptw_tmax) + 20
+    _ptw_svg.append(f"<line x1='{_AX}' y1='{_Y0 - 20}' x2='{_AX}' y2='{_ptw_ax_bottom}' stroke='#222' stroke-width='1.5'/>")
+    _ptw_marks = [(_pt_cycle_start, "Started Date"),
+                  (_pt_cycle_start + pd.Timedelta(days=30), "After 30 days Date"),
+                  (_pt_cycle_start + pd.Timedelta(days=60), "After 60 Days Date"),
+                  (_ptw_today, "Today Date")]
+    _ptw_prev_label_y = -999
+    for _ptw_md, _ptw_ml in sorted([m for m in _ptw_marks if m[0] <= _ptw_tmax], key=lambda m: m[0]):
+        _ptw_my = _ptw_y(_ptw_md)
+        _ptw_ly = max(_ptw_my, _ptw_prev_label_y + 32)
+        _ptw_prev_label_y = _ptw_ly
+        _ptw_svg.append(f"<line x1='{_AX - 8}' y1='{_ptw_my}' x2='{_AX + 8}' y2='{_ptw_my}' stroke='#222'/>")
+        _ptw_text(_AX - 14, _ptw_ly - 2, _ptw_ml, "end", "bold")
+        _ptw_text(_AX - 14, _ptw_ly + 12, _ptw_md.strftime("%Y-%m-%d"), "end")
+        if _ptw_ml == "Today Date":
+            _ptw_svg.append(
+                f"<line x1='{_AX}' y1='{_ptw_my}' x2='{_POND_X0 + _POND_DX * len(_ptw_ponds)}' y2='{_ptw_my}' "
+                "stroke='#c33' stroke-dasharray='4 4'/>"
+            )
+
+    # -- "First 30 Days" bracket
+    _ptw_b1 = _ptw_y(_pt_cycle_start)
+    _ptw_b2 = _ptw_y(min(_pt_cycle_start + pd.Timedelta(days=30), _ptw_tmax))
+    _ptw_svg.append(f"<path d='M62,{_ptw_b1} H50 V{_ptw_b2} H62' fill='none' stroke='#222'/>")
+    _ptw_text(42, (_ptw_b1 + _ptw_b2) // 2, "First 30 Days", "middle", "normal", 12, "#222",
+              f"transform='rotate(-90 42 {(_ptw_b1 + _ptw_b2) // 2})'")
+
+    # -- one vertical line per pond
+    for _i, _p in enumerate(_ptw_ponds):
+        _px = _POND_X0 + _i * _POND_DX
+        _y1, _y2 = _ptw_y(_p["start"]), _ptw_y(_p["end"])
+        _ptw_text(_px, 40, f"Pond {_p['name']}", "middle", "bold", 14)
+        _ptw_svg.append(f"<line x1='{_px}' y1='{_y1}' x2='{_px}' y2='{_y2}' stroke='#222' stroke-width='1.5'/>")
+        for _ml, _md in [("Started Date", _p["start"]),
+                         ("After 30 days Date", _p["start"] + pd.Timedelta(days=30)),
+                         ("After 60 Days Date", _p["start"] + pd.Timedelta(days=60))]:
+            if _md <= _p["end"]:
+                _my = _ptw_y(_md)
+                _ptw_svg.append(f"<line x1='{_px - 8}' y1='{_my}' x2='{_px + 8}' y2='{_my}' stroke='#222'/>")
+                _ptw_text(_px + 12, _my - 2, _ml, "start", "bold", 11)
+                _ptw_text(_px + 12, _my + 11, _md.strftime("%Y-%m-%d"), "start", "normal", 11)
+        _ptw_svg.append(f"<circle cx='{_px}' cy='{_y2}' r='16' fill='#4472c4' stroke='#1f3864'/>")
+        _ptw_text(_px, _y2 + 4, str(_p["doc"]), "middle", "bold", 12, "#ffd966")
+        _ptw_text(_px, _y2 + 32, "Full H DOC" if _p["full"] else "Today DOC", "middle", "normal", 11)
+
+    _ptw_width = _POND_X0 + _POND_DX * len(_ptw_ponds) + 40
+    _ptw_height = int(max(_ptw_ax_bottom + 80, _ptw_prev_bottom + 40))
+    _pt_components.html(
+        "<div style='background:#fff;color:#222;border-radius:8px;padding:8px;overflow-x:auto;"
+        "font-family:sans-serif;'>"
+        f"<svg width='{_ptw_width}' height='{_ptw_height}' xmlns='http://www.w3.org/2000/svg' "
+        f"font-family='sans-serif'>{''.join(_ptw_svg)}</svg></div>",
+        height=_ptw_height + 30,
+        scrolling=True,
+    )
+    st.caption(
+        "Positions are proportional to the dates. Each pond line runs from its Started Date (latest record "
+        "Date − DOC) to today, or to its Full H date; the circle shows its DOC today (DOC at Full H). "
+        "Probiotic purchases are recorded per customer, so they appear once beside the time frame line."
+    )
+
 st.markdown("---")
 
 # =========================================================================
