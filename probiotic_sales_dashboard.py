@@ -571,7 +571,9 @@ else:
         })
 
     _ptw_all_days = [p["start"] for p in _ptw_ponds] + list(_pt_by_day.keys())
-    _ptw_tmin = min(_ptw_all_days)
+    # Always leave a band above the Started Date for the "Before Stocking" section
+    # (it grows further up if probiotics were bought earlier than that).
+    _ptw_tmin = min(_ptw_all_days + [_pt_cycle_start - pd.Timedelta(days=12)])
     _ptw_tmax = max([_ptw_today] + [p["end"] for p in _ptw_ponds] + list(_pt_by_day.keys()))
     _PPD, _Y0 = 8, 80                      # pixels per day, top offset
     _AX, _BX = 170, 200                    # time-frame line x, probiotic blocks x
@@ -625,19 +627,32 @@ else:
                 "stroke='#c33' stroke-dasharray='4 4'/>"
             )
 
-    # -- "First 30 Days" bracket
-    _ptw_b1 = _ptw_y(_pt_cycle_start)
-    _ptw_b2 = _ptw_y(min(_pt_cycle_start + pd.Timedelta(days=30), _ptw_tmax))
-    _ptw_svg.append(f"<path d='M62,{_ptw_b1} H50 V{_ptw_b2} H62' fill='none' stroke='#222'/>")
-    _ptw_text(42, (_ptw_b1 + _ptw_b2) // 2, "First 30 Days", "middle", "normal", 12, "#222",
-              f"transform='rotate(-90 42 {(_ptw_b1 + _ptw_b2) // 2})'")
+    # -- section brackets: Before Stocking / First 30 Days / After 30 Days / After 60 Days
+    _ptw_d30 = _pt_cycle_start + pd.Timedelta(days=30)
+    _ptw_d60 = _pt_cycle_start + pd.Timedelta(days=60)
+    for _ptw_bl, _ptw_bs, _ptw_be in [
+        ("Before Stocking", _ptw_tmin, _pt_cycle_start),
+        ("First 30 Days", _pt_cycle_start, min(_ptw_d30, _ptw_tmax)),
+        ("After 30 Days", _ptw_d30, min(_ptw_d60, _ptw_tmax)),
+        ("After 60 Days", _ptw_d60, _ptw_tmax),
+    ]:
+        if _ptw_bs >= _ptw_be:
+            continue
+        _ptw_b1, _ptw_b2 = _ptw_y(_ptw_bs), _ptw_y(_ptw_be)
+        _ptw_bm = (_ptw_b1 + _ptw_b2) // 2
+        _ptw_svg.append(f"<path d='M62,{_ptw_b1} H50 V{_ptw_b2} H62' fill='none' stroke='#222'/>")
+        _ptw_text(42, _ptw_bm, _ptw_bl, "middle", "normal", 12, "#222",
+                  f"transform='rotate(-90 42 {_ptw_bm})'")
 
     # -- one vertical line per pond
     for _i, _p in enumerate(_ptw_ponds):
         _px = _POND_X0 + _i * _POND_DX
         _y1, _y2 = _ptw_y(_p["start"]), _ptw_y(_p["end"])
         _ptw_text(_px, 40, f"Pond {_p['name']}", "middle", "bold", 14)
-        _ptw_svg.append(f"<line x1='{_px}' y1='{_y1}' x2='{_px}' y2='{_y2}' stroke='#222' stroke-width='1.5'/>")
+        _ptw_svg.append(
+            f"<line x1='{_px}' y1='{_y1}' x2='{_px}' y2='{_y2}' "
+            f"stroke='{'#2e9e57' if _p['full'] else '#222'}' stroke-width='1.5'/>"
+        )
         for _ml, _md in [("Started Date", _p["start"]),
                          ("After 30 days Date", _p["start"] + pd.Timedelta(days=30)),
                          ("After 60 Days Date", _p["start"] + pd.Timedelta(days=60))]:
@@ -646,9 +661,16 @@ else:
                 _ptw_svg.append(f"<line x1='{_px - 8}' y1='{_my}' x2='{_px + 8}' y2='{_my}' stroke='#222'/>")
                 _ptw_text(_px + 12, _my - 2, _ml, "start", "bold", 11)
                 _ptw_text(_px + 12, _my + 11, _md.strftime("%Y-%m-%d"), "start", "normal", 11)
-        _ptw_svg.append(f"<circle cx='{_px}' cy='{_y2}' r='16' fill='#4472c4' stroke='#1f3864'/>")
-        _ptw_text(_px, _y2 + 4, str(_p["doc"]), "middle", "bold", 12, "#ffd966")
-        _ptw_text(_px, _y2 + 32, "Full H DOC" if _p["full"] else "Today DOC", "middle", "normal", 11)
+        if _p["full"]:
+            # Full H pond: green marker, no DOC — just "Full Harvested" + its Full H date.
+            _ptw_svg.append(f"<circle cx='{_px}' cy='{_y2}' r='16' fill='#2e9e57' stroke='#1b6b3a'/>")
+            _ptw_text(_px, _y2 + 4, "Full H", "middle", "bold", 10, "#ffffff")
+            _ptw_text(_px, _y2 + 32, "Full Harvested", "middle", "bold", 11, "#1b6b3a")
+            _ptw_text(_px, _y2 + 45, _p["end"].strftime("%Y-%m-%d"), "middle", "normal", 11, "#1b6b3a")
+        else:
+            _ptw_svg.append(f"<circle cx='{_px}' cy='{_y2}' r='16' fill='#4472c4' stroke='#1f3864'/>")
+            _ptw_text(_px, _y2 + 4, str(_p["doc"]), "middle", "bold", 12, "#ffd966")
+            _ptw_text(_px, _y2 + 32, "Today DOC", "middle", "normal", 11)
 
     _ptw_width = _POND_X0 + _POND_DX * len(_ptw_ponds) + 40
     _ptw_height = int(max(_ptw_ax_bottom + 80, _ptw_prev_bottom + 40))
@@ -662,7 +684,8 @@ else:
     )
     st.caption(
         "Positions are proportional to the dates. Each pond line runs from its Started Date (latest record "
-        "Date − DOC) to today, or to its Full H date; the circle shows its DOC today (DOC at Full H). "
+        "Date − DOC) to today, or to its Full H date. Running ponds end in a circle showing DOC today; "
+        "Full H ponds turn green and show Full Harvested with the harvest date instead. "
         "Probiotic purchases are recorded per customer, so they appear once beside the time frame line."
     )
 
