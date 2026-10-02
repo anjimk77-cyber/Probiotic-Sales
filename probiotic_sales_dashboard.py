@@ -15,6 +15,11 @@ from google.oauth2.service_account import Credentials
 # DOWNLOAD ONLY — it never writes anything back to either Google Sheet.
 #
 # What it shows:
+#   0) NEW — "Probiotic Timeline" section: pick a Customer + Farm and see
+#      that farm's Probiotic purchases laid out on a timeline (Before
+#      Stocking / First 30 Days / After 30 Days / After 60 Days), plus the
+#      farm's All PL Stocking Density for V (Vannamei), M (Monodon) and
+#      Total.
 #   1) A date-range picker (Sales Details "Date" column).
 #   2) Zone-wise tables. Each table lists every currently RUNNING
 #      Customer/Farm (same "Running" definition as the manager app's
@@ -298,6 +303,205 @@ if len(_valid_sales_dates) == 0:
 
 _sales_min_date = _valid_sales_dates.min().date()
 _sales_max_date = _valid_sales_dates.max().date()
+
+# =========================================================================
+# NEW SECTION — PROBIOTIC TIMELINE (per Customer + Farm)
+#
+# Pick a Customer + Farm and this shows that farm's Probiotic purchases
+# (Sales Details rows whose "Item No." starts with "PRO", matched on the
+# farm's Customer Code) laid out on a timeline:
+#
+#   Before Stocking   -> purchase dates BEFORE the Cycle Started Date
+#   Cycle Started Date (box)
+#   First 30 Days     -> Cycle Started Date  ..  +29 days
+#   After 30 Days     -> +30 days            ..  +59 days
+#   After 60 Days     -> +60 days            ..  onwards
+#
+# Cycle Started Date = the OLDEST pond start date on that farm. A pond's
+# start date = its latest saved record's Date minus its DOC (identical to
+# the Marketing Manager view's "Started on" date, i.e. today - DOC Today).
+# Ponds whose Cycle Type is "Soon to be" haven't started, so are skipped.
+#
+# Each purchase date is one block listing only Probiotic Item Description
+# + Quantity. This section ignores the date-range picker below — it always
+# shows the farm's full probiotic history. Nothing is written anywhere.
+#
+# The All PL Stocking Density figures reuse the Marketing Manager view's
+# feed-limit density logic: each pond's latest saved Density, summed per
+# Species Culture, INCLUDING Full H ponds (V = Vannamei, M = Monodon).
+# =========================================================================
+def _pt_esc(v):
+    return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def _pt_blocks_html(date_items):
+    """date_items: list of (Timestamp, [(item_description, qty), ...])."""
+    if not date_items:
+        return "<div style='color:#888;font-size:0.85rem;padding:14px 16px;'>No probiotic purchases</div>"
+    _html = ""
+    for _d, _items in date_items:
+        _rows = "".join(
+            "<tr>"
+            f"<td style='border:1px solid #888;padding:3px 12px;text-align:center;'>{_pt_esc(_i)}</td>"
+            f"<td style='border:1px solid #888;padding:3px 12px;text-align:right;min-width:60px;'>{_q:,.0f}</td>"
+            "</tr>"
+            for _i, _q in _items
+        )
+        _html += (
+            "<div style='display:flex;align-items:center;margin:16px 0;'>"
+            "<div style='width:130px;text-align:center;font-size:0.9rem;'>"
+            f"{_d.strftime('%Y-%m-%d')}<br><span style='font-size:1.3rem;line-height:1;'>⟶</span></div>"
+            f"<table style='border-collapse:collapse;font-size:0.9rem;'>{_rows}</table>"
+            "</div>"
+        )
+    return _html
+
+def _pt_section_html(label, blocks_html, milestone_title=None, milestone_date=None):
+    _milestone = ""
+    if milestone_title:
+        _milestone = (
+            "<div style='display:inline-block;border:2px solid #888;padding:6px 14px;font-weight:bold;"
+            f"margin:8px 0 0 0;'>{_pt_esc(milestone_title)}"
+            f"<div style='font-size:0.75rem;font-weight:normal;color:#888;'>{_pt_esc(milestone_date)}</div></div>"
+        )
+    return (
+        "<div style='display:flex;align-items:stretch;'>"
+        "<div style='width:120px;display:flex;align-items:center;justify-content:center;text-align:center;"
+        f"font-weight:bold;border-right:3px solid #888;padding-right:8px;margin-right:0;'>{_pt_esc(label)}</div>"
+        "<div style='flex:1;border-left:2px solid #888;margin-left:40px;padding-left:0;'>"
+        f"<div style='margin-left:-2px;'>{_milestone}</div>"
+        f"<div style='padding-left:20px;'>{blocks_html}</div>"
+        "</div></div>"
+    )
+
+st.subheader("🧪 Probiotic Timeline — Customer & Farm")
+
+_pt_customers = sorted(customer_df["Customer Name"].replace("", pd.NA).dropna().unique().tolist())
+_pt_c1, _pt_c2 = st.columns(2)
+with _pt_c1:
+    _pt_customer = st.selectbox("Customer Name", _pt_customers, key="pt_customer_select")
+
+_pt_farm_options = sorted(
+    customer_df.loc[customer_df["Customer Name"] == _pt_customer, "Farm Name with Code"]
+    .replace("", pd.NA).dropna().unique().tolist()
+)
+if not _pt_farm_options:
+    _pt_farm_options = ["-- No farms found for this customer --"]
+with _pt_c2:
+    _pt_farm = st.selectbox("Farm Name with Code", _pt_farm_options, key=f"pt_farm_select_{_pt_customer}")
+
+try:
+    _pt_all = load_data()
+except Exception as e:
+    _pt_all = pd.DataFrame(columns=COLUMN_ORDER)
+    st.error(f"❌ Could not connect to the main Google Sheet. Check sharing settings.\n\n{e}")
+
+_pt_needed = {"Customer", "Farm Name with Code", "Pond Number", "Date", "DOC", "Density",
+              "Species Culture", "Cycle Type"}
+_pt_latest = pd.DataFrame()
+if len(_pt_all) > 0 and _pt_needed.issubset(_pt_all.columns):
+    _pt_farm_df = _pt_all[
+        (_pt_all["Customer"] == _pt_customer) & (_pt_all["Farm Name with Code"] == _pt_farm)
+    ].copy()
+    if len(_pt_farm_df) > 0:
+        _pt_farm_df["_ParsedDate"] = pd.to_datetime(_pt_farm_df["Date"], errors="coerce")
+        # Latest saved record per pond (same basis as the Marketing Manager view).
+        _pt_latest = (
+            _pt_farm_df.dropna(subset=["_ParsedDate"])
+            .sort_values("_ParsedDate")
+            .groupby("Pond Number", as_index=False)
+            .last()
+        )
+
+# ---- All PL Stocking Density: V / M / Total (Full H ponds INCLUDED) ----
+_pt_density_v = 0.0
+_pt_density_m = 0.0
+_pt_density_total = 0.0
+if len(_pt_latest) > 0:
+    _pt_dens = pd.to_numeric(_pt_latest["Density"], errors="coerce")
+    _pt_species = _pt_latest["Species Culture"].astype(str).str.strip().str.lower()
+    _pt_density_v = float(_pt_dens[_pt_species.str.contains("vannamei")].sum())
+    _pt_density_m = float(_pt_dens[_pt_species.str.contains("monodon")].sum())
+    _pt_density_total = float(_pt_dens.sum())
+
+st.markdown("**🦐 All PL Stocking Density**")
+_pt_m1, _pt_m2, _pt_m3 = st.columns(3)
+_pt_m1.metric("V (Vannamei)", f"{_pt_density_v:,.0f}")
+_pt_m2.metric("M (Monodon)", f"{_pt_density_m:,.0f}")
+_pt_m3.metric("Total", f"{_pt_density_total:,.0f}")
+st.caption("Sum of each pond's latest saved Density (Full H ponds included), split by Species Culture.")
+
+# ---- Cycle Started Date = OLDEST pond start date ----
+def _pt_pond_start(prow):
+    if str(prow.get("Cycle Type", "")).strip() == "Soon to be":
+        return pd.NaT
+    try:
+        _doc = int(float(prow.get("DOC")))
+    except (TypeError, ValueError):
+        return pd.NaT
+    return prow["_ParsedDate"] - pd.Timedelta(days=_doc)
+
+_pt_cycle_start = pd.NaT
+_pt_started_ponds = 0
+if len(_pt_latest) > 0:
+    _pt_starts = _pt_latest.apply(_pt_pond_start, axis=1).dropna()
+    _pt_started_ponds = len(_pt_starts)
+    if _pt_started_ponds > 0:
+        _pt_cycle_start = _pt_starts.min().normalize()
+
+_pt_code = _customer_code_for(_pt_customer, _pt_farm)
+
+if not _pt_code:
+    st.info("No Customer Code found for this farm in 'Customer List.xlsx', so probiotic purchases "
+            "can't be matched.")
+elif pd.isna(_pt_cycle_start):
+    st.info("No started pond (valid DOC + Date) found for this farm yet, so the Cycle Started Date "
+            "can't be worked out.")
+else:
+    _pt_sales = df_sales[
+        (df_sales["Customer Code"].astype(str).str.strip().str.lower() == _pt_code.strip().lower())
+        & df_sales["Item No."].astype(str).str.strip().str.upper().str.startswith(PROBIOTIC_PREFIX)
+        & df_sales["_ParsedDate"].notna()
+    ].copy()
+    _pt_sales["_Day"] = _pt_sales["_ParsedDate"].dt.normalize()
+    _pt_sales["_Item"] = _pt_sales["Item Description"].astype(str).str.strip()
+
+    _pt_by_day = {}
+    for (_day, _item), _qty in _pt_sales.groupby(["_Day", "_Item"], sort=False)["Quantity"].sum().items():
+        _pt_by_day.setdefault(_day, []).append((_item, _qty))
+
+    _pt_d30 = _pt_cycle_start + pd.Timedelta(days=30)
+    _pt_d60 = _pt_cycle_start + pd.Timedelta(days=60)
+
+    _pt_before, _pt_first30, _pt_after30, _pt_after60 = [], [], [], []
+    for _day in sorted(_pt_by_day):
+        _entry = (_day, _pt_by_day[_day])
+        if _day < _pt_cycle_start:
+            _pt_before.append(_entry)
+        elif _day < _pt_d30:
+            _pt_first30.append(_entry)
+        elif _day < _pt_d60:
+            _pt_after30.append(_entry)
+        else:
+            _pt_after60.append(_entry)
+
+    _pt_fmt = lambda d: d.strftime("%Y-%m-%d")
+    st.markdown(
+        _pt_section_html("Before Stocking", _pt_blocks_html(_pt_before))
+        + _pt_section_html("First 30 Days", _pt_blocks_html(_pt_first30),
+                           "Cycle Started Date", _pt_fmt(_pt_cycle_start))
+        + _pt_section_html("After 30 Days", _pt_blocks_html(_pt_after30),
+                           "After 30 Days Date", _pt_fmt(_pt_d30))
+        + _pt_section_html("After 60 Days", _pt_blocks_html(_pt_after60),
+                           "After 60 Days Date", _pt_fmt(_pt_d60)),
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"Cycle Started Date = oldest pond start date ({_pt_started_ponds} started pond(s); "
+        "start = latest record Date − DOC). Probiotic items only (Item No. starting with "
+        f"'{PROBIOTIC_PREFIX}'), Customer Code '{_pt_code}'."
+    )
+
+st.markdown("---")
 
 # =========================================================================
 # DATE RANGE SELECTOR
