@@ -680,12 +680,33 @@ else:
 
     _ptw_width = _POND_X0 + _POND_DX * len(_ptw_ponds) + 40
     _ptw_height = int(max(_ptw_ax_bottom + 80, _ptw_prev_bottom + 40))
+    # Print button lives inside the component itself, so window.print() prints
+    # just this timeline (button hidden, scaled to fit one landscape page).
+    _ptw_title = _pt_esc(f"{_pt_customer} — {_pt_farm} — Pond-wise Probiotic Timeline "
+                         f"(printed {_ptw_today.strftime('%Y-%m-%d')})")
+    _ptw_html = (
+        "<style>"
+        "body{margin:0;font-family:sans-serif;}"
+        ".ptw-btn{background:#4472c4;color:#fff;border:none;border-radius:6px;padding:6px 14px;"
+        "font-size:14px;cursor:pointer;margin:0 0 8px 0;}"
+        ".ptw-btn:hover{background:#365ea5;}"
+        ".ptw-title{font-weight:bold;font-size:14px;margin:0 0 6px 0;}"
+        "@page{size:landscape;margin:10mm;}"
+        "@media print{.ptw-btn{display:none;}"
+        "html,body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}"
+        ".ptw-card{overflow:visible !important;}"
+        ".ptw-card svg{width:100% !important;height:auto !important;}}"
+        "</style>"
+        "<button class='ptw-btn' onclick='window.print()'>🖨️ Print</button>"
+        "<div class='ptw-card' style='background:#fff;color:#222;border-radius:8px;padding:8px;"
+        "overflow-x:auto;'>"
+        f"<div class='ptw-title'>{_ptw_title}</div>"
+        f"<svg viewBox='0 0 {_ptw_width} {_ptw_height}' width='{_ptw_width}' height='{_ptw_height}' "
+        f"xmlns='http://www.w3.org/2000/svg' font-family='sans-serif'>{''.join(_ptw_svg)}</svg></div>"
+    )
     _pt_components.html(
-        "<div style='background:#fff;color:#222;border-radius:8px;padding:8px;overflow-x:auto;"
-        "font-family:sans-serif;'>"
-        f"<svg width='{_ptw_width}' height='{_ptw_height}' xmlns='http://www.w3.org/2000/svg' "
-        f"font-family='sans-serif'>{''.join(_ptw_svg)}</svg></div>",
-        height=_ptw_height + 30,
+        _ptw_html,
+        height=_ptw_height + 90,
         scrolling=True,
     )
     st.caption(
