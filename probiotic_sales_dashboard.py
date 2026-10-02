@@ -72,8 +72,8 @@ PROBIOTIC_PREFIX = "PRO"
 # Standard username/password login screen with a blurred background image.
 # Nothing below this block runs until the user is authenticated.
 # =========================================================================
-LOGIN_USERNAME = "Lakshani"
-LOGIN_PASSWORD = "2000"
+LOGIN_USERNAME = "Probiotics"
+LOGIN_PASSWORD = "2001"
 LOGIN_BACKGROUND_IMAGE_URL = (
     "https://images.unsplash.com/photo-1717737852821-1bea137cab50"
     "?auto=format&fit=crop&w=1740&q=80&blur=60"
