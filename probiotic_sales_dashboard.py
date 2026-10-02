@@ -568,6 +568,9 @@ else:
             "end": _ptw_end,
             "full": _ptw_full,
             "doc": (_ptw_end - _ptw_start).days,   # = DOC Today (or DOC at Full H)
+            "letter": ("V" if "vannamei" in str(_ptw_pr.get("Species Culture", "")).lower()
+                       else "M" if "monodon" in str(_ptw_pr.get("Species Culture", "")).lower() else ""),
+            "density": pd.to_numeric(_ptw_pr.get("Density", ""), errors="coerce"),
         })
 
     _ptw_all_days = [p["start"] for p in _ptw_ponds] + list(_pt_by_day.keys())
@@ -648,7 +651,10 @@ else:
     for _i, _p in enumerate(_ptw_ponds):
         _px = _POND_X0 + _i * _POND_DX
         _y1, _y2 = _ptw_y(_p["start"]), _ptw_y(_p["end"])
-        _ptw_text(_px, 40, f"Pond {_p['name']}", "middle", "bold", 14)
+        _ptw_text(_px, 34, f"Pond {_p['name']}" + (f" - {_p['letter']}" if _p["letter"] else ""),
+                  "middle", "bold", 14)
+        _ptw_text(_px, 52, "Stocking Density: " + (f"{_p['density']:,.0f}" if pd.notna(_p["density"]) else "-"),
+                  "middle", "normal", 11)
         _ptw_svg.append(
             f"<line x1='{_px}' y1='{_y1}' x2='{_px}' y2='{_y2}' "
             f"stroke='{'#2e9e57' if _p['full'] else '#222'}' stroke-width='1.5'/>"
