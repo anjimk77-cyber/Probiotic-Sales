@@ -333,8 +333,10 @@ _sales_max_date = _valid_sales_dates.max().date()
 def _pt_esc(v):
     return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def _pt_blocks_html(date_items):
-    """date_items: list of (Timestamp, [(item_description, qty), ...])."""
+def _pt_blocks_html(date_items, show_total=False):
+    """date_items: list of (Timestamp, [(item_description, qty), ...]).
+    show_total=True adds a brace + a "Total" box to the right listing each
+    item's summed Quantity across every date in this section."""
     if not date_items:
         return "<div style='color:#888;font-size:0.85rem;padding:14px 16px;'>No probiotic purchases</div>"
     _html = ""
@@ -353,7 +355,33 @@ def _pt_blocks_html(date_items):
             f"<table style='border-collapse:collapse;font-size:0.9rem;'>{_rows}</table>"
             "</div>"
         )
-    return _html
+    if not show_total:
+        return _html
+
+    # Item totals across the whole section (in the order items first appear).
+    _totals = {}
+    for _d, _items in date_items:
+        for _i, _q in _items:
+            _totals[_i] = _totals.get(_i, 0) + _q
+    _total_rows = "".join(
+        "<tr>"
+        f"<td style='border:1px solid #888;padding:3px 12px;text-align:center;'>{_pt_esc(_i)}</td>"
+        f"<td style='border:1px solid #888;padding:3px 12px;text-align:right;min-width:60px;font-weight:bold;'>{_q:,.0f}</td>"
+        "</tr>"
+        for _i, _q in _totals.items()
+    )
+    _brace = (
+        "<div style='align-self:stretch;width:14px;margin:16px 14px 16px 24px;border:2px solid #888;"
+        "border-left:none;border-radius:0 14px 14px 0;'></div>"
+    )
+    _total_box = (
+        "<div style='display:flex;align-items:center;'>"
+        "<table style='border-collapse:collapse;font-size:0.9rem;'>"
+        "<tr><td colspan='2' style='border:1px solid #888;padding:3px 12px;text-align:center;"
+        "font-weight:bold;'>Total</td></tr>"
+        f"{_total_rows}</table></div>"
+    )
+    return f"<div style='display:flex;align-items:stretch;'><div>{_html}</div>{_brace}{_total_box}</div>"
 
 def _pt_section_html(label, blocks_html, milestone_title=None, milestone_date=None):
     _milestone = ""
@@ -487,11 +515,11 @@ else:
     _pt_fmt = lambda d: d.strftime("%Y-%m-%d")
     st.markdown(
         _pt_section_html("Before Stocking", _pt_blocks_html(_pt_before))
-        + _pt_section_html("First 30 Days", _pt_blocks_html(_pt_first30),
+        + _pt_section_html("First 30 Days", _pt_blocks_html(_pt_first30, show_total=True),
                            "Cycle Started Date", _pt_fmt(_pt_cycle_start))
-        + _pt_section_html("After 30 Days", _pt_blocks_html(_pt_after30),
+        + _pt_section_html("After 30 Days", _pt_blocks_html(_pt_after30, show_total=True),
                            "After 30 Days Date", _pt_fmt(_pt_d30))
-        + _pt_section_html("After 60 Days", _pt_blocks_html(_pt_after60),
+        + _pt_section_html("After 60 Days", _pt_blocks_html(_pt_after60, show_total=True),
                            "After 60 Days Date", _pt_fmt(_pt_d60)),
         unsafe_allow_html=True,
     )
