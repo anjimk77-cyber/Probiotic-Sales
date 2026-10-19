@@ -838,6 +838,98 @@ running_farms["Customer Code"] = running_farms.apply(
 )
 
 # =========================================================================
+# NEW REPORT — PROBIOTICS PURCHASED SINCE 10 DAYS BEFORE CYCLE START
+#
+# For every RUNNING farm:
+#   Customer Name | Farm Name with Code | Cycle Started Date |
+#   Date (10 days before Cycle Started Date) | <one column per Probiotic item> | Total
+# Each Probiotic cell = sum of Quantity purchased ON or AFTER the
+# "10 days before" date (up to the latest sale in the sheet), matched on the
+# farm's Customer Code and Item No. starting with "PRO".
+# Cycle Started Date = OLDEST started pond start date (same rule as the
+# Probiotic Timeline section above). This report ignores the date-range
+# picker. View-only; nothing is written anywhere.
+# =========================================================================
+PRE_START_DAYS = 10
+
+st.subheader(f"📋 Probiotic Purchases Since {PRE_START_DAYS} Days Before Cycle Start")
+
+# --- Cycle Started Date per running farm (oldest pond start) ---
+_cs_ponds = _latest_per_pond.copy()
+_cs_ponds["_PondStart"] = _cs_ponds.apply(_pt_pond_start, axis=1)
+_cs_ponds = _cs_ponds.dropna(subset=["_PondStart"])
+_cs_by_farm = {
+    _k: pd.Timestamp(_v).normalize()
+    for _k, _v in _cs_ponds.groupby(["Customer", "Farm Name with Code"])["_PondStart"].min().items()
+}
+
+# --- All probiotic sales (full history), and the item columns ---
+_cs_pro_sales = df_sales[
+    df_sales["Item No."].astype(str).str.strip().str.upper().str.startswith(PROBIOTIC_PREFIX)
+    & df_sales["_ParsedDate"].notna()
+].copy()
+_cs_pro_sales["_Item"] = _cs_pro_sales["Item Description"].astype(str).str.strip()
+_cs_pro_sales["_CodeKey"] = _cs_pro_sales["Customer Code"].astype(str).str.strip().str.lower()
+_cs_items = list(dict.fromkeys(_cs_pro_sales["_Item"]))
+
+_cs_cols = (["Customer Name", "Farm Name with Code", "Cycle Started Date",
+             f"Date ({PRE_START_DAYS} Days Before Cycle Start)"] + _cs_items + ["Total"])
+
+_cs_rows = []
+_cs_skipped = 0
+for _, _f in running_farms.iterrows():
+    _cs_start = _cs_by_farm.get((_f["Customer"], _f["Farm Name with Code"]))
+    if _cs_start is None or pd.isna(_cs_start):
+        _cs_skipped += 1   # no started pond yet -> no Cycle Started Date
+        continue
+    _cs_from = _cs_start - pd.Timedelta(days=PRE_START_DAYS)
+    _cs_code = str(_f["Customer Code"]).strip().lower()
+
+    _cs_row = {
+        "Customer Name": _f["Customer"],
+        "Farm Name with Code": _f["Farm Name with Code"],
+        "Cycle Started Date": _cs_start.strftime("%Y-%m-%d"),
+        f"Date ({PRE_START_DAYS} Days Before Cycle Start)": _cs_from.strftime("%Y-%m-%d"),
+    }
+    _cs_total = 0
+    if _cs_code:
+        _cs_sub = _cs_pro_sales[
+            (_cs_pro_sales["_CodeKey"] == _cs_code) & (_cs_pro_sales["_ParsedDate"] >= _cs_from)
+        ]
+        _cs_sums = _cs_sub.groupby("_Item")["Quantity"].sum()
+    else:
+        _cs_sums = pd.Series(dtype=float)
+    for _item in _cs_items:
+        _val = float(_cs_sums.get(_item, 0))
+        _cs_row[_item] = _val
+        _cs_total += _val
+    _cs_row["Total"] = _cs_total
+    _cs_rows.append(_cs_row)
+
+_cs_df = pd.DataFrame(_cs_rows, columns=_cs_cols)
+
+if len(_cs_df) == 0:
+    st.info("No running farm has a started pond yet, so no Cycle Started Date could be worked out.")
+elif not _cs_items:
+    st.info(f"No Probiotic sales (Item No. starting with '{PROBIOTIC_PREFIX}') found in the Sales Details sheet.")
+else:
+    st.dataframe(_cs_df, use_container_width=True, hide_index=True)
+    st.caption(
+        f"Each probiotic cell = total Quantity purchased on or after the date {PRE_START_DAYS} days before the "
+        "farm's Cycle Started Date (oldest pond start = latest record Date − DOC). "
+        f"{_cs_skipped} running farm(s) without a started pond are left out."
+    )
+    st.download_button(
+        label="⬇️ Download Cycle-Start Report as CSV",
+        data=_cs_df.to_csv(index=False),
+        file_name=f"probiotic_since_{PRE_START_DAYS}_days_before_cycle_start.csv",
+        mime="text/csv",
+        key="cycle_start_report_download",
+    )
+
+st.markdown("---")
+
+# =========================================================================
 # FILTER SALES DATA TO PROBIOTIC ITEMS WITHIN THE SELECTED DATE RANGE
 # (df_sales was already loaded above, before the date picker.)
 # =========================================================================
