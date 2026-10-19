@@ -854,6 +854,21 @@ PRE_START_DAYS = 10
 
 st.subheader(f"📋 Probiotic Purchases Since {PRE_START_DAYS} Days Before Cycle Start")
 
+# --- Zone selection for this report ---
+_cs_zones_present = sorted(
+    [z for z in running_farms["Zone"].astype(str).str.strip().unique() if z and z.lower() != "nan"]
+)
+_cs_zone_ok = True
+if _cs_zones_present:
+    _cs_selected_zones = st.multiselect(
+        "Select Zone(s)", options=_cs_zones_present, default=_cs_zones_present,
+        key="cycle_start_zone_filter",
+    )
+    _cs_zone_ok = bool(_cs_selected_zones)
+    _cs_farms = running_farms[running_farms["Zone"].astype(str).str.strip().isin(_cs_selected_zones)]
+else:
+    _cs_farms = running_farms
+
 # --- Cycle Started Date per running farm (oldest pond start) ---
 _cs_ponds = _latest_per_pond.copy()
 _cs_ponds["_PondStart"] = _cs_ponds.apply(_pt_pond_start, axis=1)
@@ -877,7 +892,7 @@ _cs_cols = (["Customer Name", "Farm Name with Code", "Cycle Started Date",
 
 _cs_rows = []
 _cs_skipped = 0
-for _, _f in running_farms.iterrows():
+for _, _f in _cs_farms.iterrows():
     _cs_start = _cs_by_farm.get((_f["Customer"], _f["Farm Name with Code"]))
     if _cs_start is None or pd.isna(_cs_start):
         _cs_skipped += 1   # no started pond yet -> no Cycle Started Date
@@ -908,7 +923,9 @@ for _, _f in running_farms.iterrows():
 
 _cs_df = pd.DataFrame(_cs_rows, columns=_cs_cols)
 
-if len(_cs_df) == 0:
+if not _cs_zone_ok:
+    st.info("Select at least one zone above to display this report.")
+elif len(_cs_df) == 0:
     st.info("No running farm has a started pond yet, so no Cycle Started Date could be worked out.")
 elif not _cs_items:
     st.info(f"No Probiotic sales (Item No. starting with '{PROBIOTIC_PREFIX}') found in the Sales Details sheet.")
