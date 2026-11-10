@@ -947,6 +947,246 @@ else:
 st.markdown("---")
 
 # =========================================================================
+# NEW REPORT — CATEGORY-WISE PURCHASES SINCE 10 DAYS BEFORE CYCLE START
+#
+# For every RUNNING farm (with a started pond):
+#   Customer Code | Customer Name | Farm Name with Code | Cycle Started Date |
+#   Date (10 Days Before Cycle Start) | Total Density |
+#   then one column per product, grouped under its main Category header row.
+# Each product cell = Quantity sold ON or AFTER the "10 days before" date,
+# matched on the farm's Customer Code, for Item No. starting with
+# PROB / OTH / CHEM. Downloadable as CSV and PDF. View-only.
+# =========================================================================
+import re as _re
+import csv as _csv
+
+_NC_PREFIX_REGEX = r"^(?:PROB|OTH|CHEM)"
+
+_NC_CATEGORIES = {
+    "Mineral": [
+        "Envomin- 10kg Bgs", "Clinzex DS - 10kg Bgs", "OSMIN - 1Kg Pck",
+        "Magnesium Sulphate - 25kg",
+    ],
+    "Water Probiotics": [
+        "Eco Pro - 20Lt Can", "Profs - 1kg - Box", "Profs - 200g - Pck",
+        "Aqua Probiotic Media - 5Lt",
+    ],
+    "Gut Probiotics": [
+        "Zymetin - 500g Pck", "BIO C - 5kg", "Citromax - 100g Btl",
+    ],
+    "Vitamin & Feed Additive": [
+        "Mutant Gold - 500g", "Mutan P - 500g", "Vitapond - 500g", "WE VITC 1Kg",
+    ],
+    "Chemicals": [
+        "Magic Blue 250 g", "HT-DROP 1L Bottle", "HT-Green 250 g",
+        "HT-O-RINE 75ml Bottle", "Tea Seed - 25kg Bgs", "Mizuphor - 1Lt Btl",
+        "EDTA - 5Kg", "EDTA - 25kg", "Aqua Oxy Ganule - 5 Kg",
+        "Aqua Oxy Ganule - 10 Kg", "Aqua Oxy Ganule - 25 Kg",
+    ],
+}
+_NC_UNLISTED_CATEGORY = "Other (not in category list)"
+
+def _nc_norm(s):
+    # Ignore case, spaces and punctuation so small spelling/spacing
+    # differences between this list and the Sales sheet still match.
+    return _re.sub(r"[^a-z0-9]", "", str(s).lower())
+
+st.subheader(f"📦 Category-wise Purchases Since {PRE_START_DAYS} Days Before Cycle Start")
+
+# --- Zone filter (own key, independent of the other sections) ---
+_nc_zones_present = sorted(
+    [z for z in running_farms["Zone"].astype(str).str.strip().unique() if z and z.lower() != "nan"]
+)
+_nc_zone_ok = True
+if _nc_zones_present:
+    _nc_sel_zones = st.multiselect(
+        "Select Zone(s)", options=_nc_zones_present, default=_nc_zones_present,
+        key="nc_zone_filter",
+    )
+    _nc_zone_ok = bool(_nc_sel_zones)
+    _nc_farms = running_farms[running_farms["Zone"].astype(str).str.strip().isin(_nc_sel_zones)]
+else:
+    _nc_farms = running_farms
+
+# --- Total Density per farm = sum of each pond's latest saved Density ---
+_nc_dens_by_farm = {}
+if len(_latest_per_pond) > 0 and "Density" in _latest_per_pond.columns:
+    _tmp = _latest_per_pond.copy()
+    _tmp["_Dens"] = pd.to_numeric(_tmp["Density"], errors="coerce").fillna(0)
+    _nc_dens_by_farm = _tmp.groupby(["Customer", "Farm Name with Code"])["_Dens"].sum().to_dict()
+
+# --- Sales rows for PROB / OTH / CHEM items ---
+_nc_sales = df_sales[
+    df_sales["Item No."].astype(str).str.strip().str.upper().str.contains(_NC_PREFIX_REGEX, regex=True)
+    & df_sales["_ParsedDate"].notna()
+].copy()
+_nc_sales["_CodeKey"] = _nc_sales["Customer Code"].astype(str).str.strip().str.lower()
+_nc_sales["_Norm"] = _nc_sales["Item Description"].apply(_nc_norm)
+
+# --- Column layout: (category, display name, normalised key) ---
+_nc_item_cols = []
+_nc_known = set()
+for _cat, _items in _NC_CATEGORIES.items():
+    for _it in _items:
+        _nc_item_cols.append((_cat, _it, _nc_norm(_it)))
+        _nc_known.add(_nc_norm(_it))
+
+# Items that were sold but aren't in the category list: keep them visible.
+_nc_unlisted = (
+    _nc_sales.loc[~_nc_sales["_Norm"].isin(_nc_known), ["_Norm", "Item Description"]]
+    .assign(**{"Item Description": lambda d: d["Item Description"].astype(str).str.strip()})
+    .drop_duplicates(subset="_Norm")
+)
+for _, _r in _nc_unlisted.iterrows():
+    _nc_item_cols.append((_NC_UNLISTED_CATEGORY, _r["Item Description"], _r["_Norm"]))
+
+_NC_ID_COLS = ["Customer Code", "Customer Name", "Farm Name with Code",
+               "Cycle Started Date", f"Date ({PRE_START_DAYS} Days Before Cycle Start)",
+               "Total Density"]
+
+_nc_rows = []
+_nc_skipped = 0
+for _, _f in _nc_farms.iterrows():
+    _start = _cs_by_farm.get((_f["Customer"], _f["Farm Name with Code"]))
+    if _start is None or pd.isna(_start):
+        _nc_skipped += 1
+        continue
+    _from = _start - pd.Timedelta(days=PRE_START_DAYS)
+    _code = str(_f["Customer Code"]).strip().lower()
+    if _code:
+        _sub = _nc_sales[(_nc_sales["_CodeKey"] == _code) & (_nc_sales["_ParsedDate"] >= _from)]
+        _sums = _sub.groupby("_Norm")["Quantity"].sum()
+    else:
+        _sums = pd.Series(dtype=float)
+    _row = [
+        str(_f["Customer Code"]), _f["Customer"], _f["Farm Name with Code"],
+        _start.strftime("%Y-%m-%d"), _from.strftime("%Y-%m-%d"),
+        float(_nc_dens_by_farm.get((_f["Customer"], _f["Farm Name with Code"]), 0)),
+    ]
+    for _cat, _it, _key in _nc_item_cols:
+        _row.append(float(_sums.get(_key, 0)))
+    _nc_rows.append(_row)
+
+# Two-level header: top = Category, bottom = product / column name.
+_nc_header_cat = [""] * len(_NC_ID_COLS) + [c for c, _, _ in _nc_item_cols]
+_nc_header_item = _NC_ID_COLS + [i for _, i, _ in _nc_item_cols]
+
+def _nc_fmt(v):
+    if isinstance(v, float):
+        return f"{v:,.0f}" if v.is_integer() else f"{v:,.2f}"
+    return str(v)
+
+def _nc_build_csv():
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    # Category shown once at the first column of each group (blank after).
+    _top, _prev = [], None
+    for c in _nc_header_cat:
+        _top.append(c if c and c != _prev else "")
+        _prev = c if c else _prev
+    w.writerow(_top)
+    w.writerow(_nc_header_item)
+    for r in _nc_rows:
+        w.writerow(r)
+    return buf.getvalue()
+
+def _nc_build_pdf():
+    from reportlab.lib.pagesizes import A3, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+    _hs = ParagraphStyle("nc_h", fontName="Helvetica-Bold", fontSize=6, leading=7, alignment=1)
+    _ts = ParagraphStyle("nc_t", fontName="Helvetica-Bold", fontSize=12, leading=14)
+    _n_id, _n_all = len(_NC_ID_COLS), len(_nc_header_item)
+
+    row0 = [Paragraph(_pt_esc(_nc_header_item[i]), _hs) if i < _n_id else "" for i in range(_n_all)]
+    row1 = [""] * _n_all
+    _spans, _i = [], _n_id
+    while _i < _n_all:
+        _j = _i
+        while _j + 1 < _n_all and _nc_header_cat[_j + 1] == _nc_header_cat[_i]:
+            _j += 1
+        row0[_i] = Paragraph(_pt_esc(_nc_header_cat[_i]), _hs)
+        _spans.append(("SPAN", (_i, 0), (_j, 0)))
+        _i = _j + 1
+    for _c in range(_n_id):
+        _spans.append(("SPAN", (_c, 0), (_c, 1)))
+    for _c in range(_n_id, _n_all):
+        row1[_c] = Paragraph(_pt_esc(_nc_header_item[_c]), _hs)
+
+    data = [row0, row1]
+    for r in _nc_rows:
+        data.append([_nc_fmt(v) for v in r])
+
+    _page = landscape(A3)
+    _usable = _page[0] - 40
+    _id_w = [45, 85, 100, 52, 62, 45]
+    _item_w = max(24, (_usable - sum(_id_w)) / max(1, _n_all - _n_id))
+    _widths = _id_w + [_item_w] * (_n_all - _n_id)
+
+    _style = [
+        ("FONTSIZE", (0, 2), (-1, -1), 6),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+        ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#dbe5f7")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (_n_id - 1, 2), (-1, -1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, colors.HexColor("#f6f8fc")]),
+    ] + _spans
+
+    out = io.BytesIO()
+    doc = SimpleDocTemplate(out, pagesize=_page, leftMargin=20, rightMargin=20,
+                            topMargin=20, bottomMargin=20)
+    _title = Paragraph(
+        f"KMN Aqua Services — Category-wise Purchases Since {PRE_START_DAYS} Days Before "
+        f"Cycle Start (printed {date.today():%Y-%m-%d})", _ts)
+    _tbl = Table(data, colWidths=_widths, repeatRows=2)
+    _tbl.setStyle(TableStyle(_style))
+    doc.build([_title, Spacer(1, 8), _tbl])
+    return out.getvalue()
+
+if not _nc_zone_ok:
+    st.info("Select at least one zone above to display this report.")
+elif len(_nc_rows) == 0:
+    st.info("No running farm has a started pond yet, so no Cycle Started Date could be worked out.")
+else:
+    _nc_df = pd.DataFrame(
+        _nc_rows,
+        columns=pd.MultiIndex.from_arrays([
+            [c if c else " " for c in _nc_header_cat], _nc_header_item
+        ]),
+    )
+    st.dataframe(_nc_df, use_container_width=True, hide_index=True)
+    st.caption(
+        f"Each product cell = Quantity sold on or after the date {PRE_START_DAYS} days before the farm's "
+        "Cycle Started Date (oldest pond start = latest record Date − DOC). Item No. starting with "
+        "PROB / OTH / CHEM. Total Density = sum of each pond's latest saved Density (Full H ponds included). "
+        f"{_nc_skipped} running farm(s) without a started pond are left out."
+    )
+    _nc_d1, _nc_d2 = st.columns(2)
+    with _nc_d1:
+        st.download_button(
+            "⬇️ Download Category Report as CSV",
+            data=_nc_build_csv(),
+            file_name=f"category_purchases_since_{PRE_START_DAYS}_days_before_cycle_start.csv",
+            mime="text/csv",
+            key="nc_csv_download",
+        )
+    with _nc_d2:
+        try:
+            st.download_button(
+                "⬇️ Download Category Report as PDF",
+                data=_nc_build_pdf(),
+                file_name=f"category_purchases_since_{PRE_START_DAYS}_days_before_cycle_start.pdf",
+                mime="application/pdf",
+                key="nc_pdf_download",
+            )
+        except ImportError:
+            st.warning("PDF export needs the `reportlab` package — add it to requirements.txt.")
+
+st.markdown("---")
+
+# =========================================================================
 # FILTER SALES DATA TO PROBIOTIC ITEMS WITHIN THE SELECTED DATE RANGE
 # (df_sales was already loaded above, before the date picker.)
 # =========================================================================
