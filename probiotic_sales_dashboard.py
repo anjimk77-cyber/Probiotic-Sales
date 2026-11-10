@@ -975,13 +975,13 @@ _NC_CATEGORIES = {
         "Zymetin - 500g Pck", "BIO C - 5kg", "Citromax - 100g Btl",
     ],
     "Vitamin & Feed Additive": [
-        "Mutant Gold - 500g", "Mutan P - 500g", "Vitapond - 500g", "WE VITC 1Kg",
+        "Mutant Gold - 500g", "Mutan P - 500g", "Vitapond - 500g", "WE VITC 1Kg", "C-VET 1Kg Bag",
     ],
     "Chemicals": [
         "Magic Blue 250 g", "HT-DROP 1L Bottle", "HT-Green 250 g",
         "HT-O-RINE 75ml Bottle", "Tea Seed - 25kg Bgs", "Mizuphor - 1Lt Btl",
         "EDTA - 5Kg", "EDTA - 25kg", "Aqua Oxy Ganule - 5 Kg",
-        "Aqua Oxy Ganule - 10 Kg", "Aqua Oxy Ganule - 25 Kg",
+        "Aqua Oxy Ganule - 10 Kg", "Aqua Oxy Ganule - 25 Kg", "BIOCURB - 1Kg",
     ],
 }
 _NC_UNLISTED_CATEGORY = "Other (not in category list)"
@@ -992,6 +992,24 @@ def _nc_norm(s):
     return _re.sub(r"[^a-z0-9]", "", str(s).lower())
 
 st.subheader(f"📦 Category-wise Purchases Since {PRE_START_DAYS} Days Before Cycle Start")
+
+# --- Date range for this report (own keys, independent of the other sections) ---
+_nc_dc1, _nc_dc2 = st.columns(2)
+with _nc_dc1:
+    _nc_start_date = st.date_input(
+        "From", value=_sales_min_date, min_value=_sales_min_date, max_value=_sales_max_date,
+        key="nc_start_date",
+    )
+with _nc_dc2:
+    _nc_end_date = st.date_input(
+        "To", value=_sales_max_date, min_value=_sales_min_date, max_value=_sales_max_date,
+        key="nc_end_date",
+    )
+_nc_range_ok = _nc_start_date <= _nc_end_date
+if not _nc_range_ok:
+    st.error("❌ 'From' date must be on or before 'To' date.")
+_nc_from_ts = pd.Timestamp(_nc_start_date)
+_nc_to_end_ts = pd.Timestamp(_nc_end_date) + pd.Timedelta(days=1)   # exclusive upper bound (whole 'To' day included)
 
 # --- Zone filter (own key, independent of the other sections) ---
 _nc_zones_present = sorted(
@@ -1046,15 +1064,25 @@ _NC_ID_COLS = ["Customer Code", "Customer Name", "Farm Name with Code",
 
 _nc_rows = []
 _nc_skipped = 0
-for _, _f in _nc_farms.iterrows():
+_nc_not_in_period = 0
+for _, _f in (_nc_farms if _nc_range_ok else _nc_farms.iloc[0:0]).iterrows():
     _start = _cs_by_farm.get((_f["Customer"], _f["Farm Name with Code"]))
     if _start is None or pd.isna(_start):
         _nc_skipped += 1
         continue
+    if _start >= _nc_to_end_ts:
+        # Farm's cycle only started after the selected period ended -> not running in it.
+        _nc_not_in_period += 1
+        continue
     _from = _start - pd.Timedelta(days=PRE_START_DAYS)
+    _win_from = max(_from, _nc_from_ts)   # count from the later of (10 days before start) and 'From'
     _code = str(_f["Customer Code"]).strip().lower()
     if _code:
-        _sub = _nc_sales[(_nc_sales["_CodeKey"] == _code) & (_nc_sales["_ParsedDate"] >= _from)]
+        _sub = _nc_sales[
+            (_nc_sales["_CodeKey"] == _code)
+            & (_nc_sales["_ParsedDate"] >= _win_from)
+            & (_nc_sales["_ParsedDate"] < _nc_to_end_ts)
+        ]
         _sums = _sub.groupby("_Norm")["Quantity"].sum()
     else:
         _sums = pd.Series(dtype=float)
@@ -1139,16 +1167,20 @@ def _nc_build_pdf():
                             topMargin=20, bottomMargin=20)
     _title = Paragraph(
         f"KMN Aqua Services — Category-wise Purchases Since {PRE_START_DAYS} Days Before "
-        f"Cycle Start (printed {date.today():%Y-%m-%d})", _ts)
+        f"Cycle Start | Period {_nc_start_date} to {_nc_end_date} "
+        f"(printed {date.today():%Y-%m-%d})", _ts)
     _tbl = Table(data, colWidths=_widths, repeatRows=2)
     _tbl.setStyle(TableStyle(_style))
     doc.build([_title, Spacer(1, 8), _tbl])
     return out.getvalue()
 
-if not _nc_zone_ok:
+if not _nc_range_ok:
+    pass   # error already shown above the filters
+elif not _nc_zone_ok:
     st.info("Select at least one zone above to display this report.")
 elif len(_nc_rows) == 0:
-    st.info("No running farm has a started pond yet, so no Cycle Started Date could be worked out.")
+    st.info("No running farm with a started pond falls in the selected period "
+            f"({_nc_start_date} to {_nc_end_date}).")
 else:
     _nc_df = pd.DataFrame(
         _nc_rows,
@@ -1158,17 +1190,20 @@ else:
     )
     st.dataframe(_nc_df, use_container_width=True, hide_index=True)
     st.caption(
-        f"Each product cell = Quantity sold on or after the date {PRE_START_DAYS} days before the farm's "
-        "Cycle Started Date (oldest pond start = latest record Date − DOC). Item No. starting with "
+        f"Period: {_nc_start_date} to {_nc_end_date}. Only running farms whose cycle had started by the 'To' "
+        f"date are listed. Each product cell = Quantity sold from the later of (the date {PRE_START_DAYS} days "
+        "before the farm's Cycle Started Date) and the 'From' date, up to the 'To' date "
+        "(Cycle Started Date = oldest pond start = latest record Date − DOC). Item No. starting with "
         "PROB / OTH / CHEM. Total Density = sum of each pond's latest saved Density (Full H ponds included). "
-        f"{_nc_skipped} running farm(s) without a started pond are left out."
+        f"{_nc_skipped} running farm(s) without a started pond and {_nc_not_in_period} farm(s) that started "
+        "after the period are left out."
     )
     _nc_d1, _nc_d2 = st.columns(2)
     with _nc_d1:
         st.download_button(
             "⬇️ Download Category Report as CSV",
             data=_nc_build_csv(),
-            file_name=f"category_purchases_since_{PRE_START_DAYS}_days_before_cycle_start.csv",
+            file_name=f"category_purchases_{_nc_start_date}_to_{_nc_end_date}.csv",
             mime="text/csv",
             key="nc_csv_download",
         )
@@ -1177,7 +1212,7 @@ else:
             st.download_button(
                 "⬇️ Download Category Report as PDF",
                 data=_nc_build_pdf(),
-                file_name=f"category_purchases_since_{PRE_START_DAYS}_days_before_cycle_start.pdf",
+                file_name=f"category_purchases_{_nc_start_date}_to_{_nc_end_date}.pdf",
                 mime="application/pdf",
                 key="nc_pdf_download",
             )
