@@ -1120,7 +1120,8 @@ if not _nc_range_ok:
     st.error("❌ 'From' date must be on or before 'To' date.")
 _nc_from_ts = pd.Timestamp(_nc_start_date)
 _nc_to_end_ts = pd.Timestamp(_nc_end_date) + pd.Timedelta(days=1)   # exclusive upper bound (whole 'To' day included)
-_nc_cap = pd.Timestamp(_nc_end_date).normalize()                    # DOC / Full H are measured up to this date
+_nc_cap = (pd.Timestamp(date.today()) if _nc_end_date >= _sales_max_date
+           else pd.Timestamp(_nc_end_date)).normalize()                    # DOC / Full H are measured up to this date
 
 # --- Farms to list = farms with at least one started pond that was Running or Partial H at some
 #     point in the selected From-To period: started on/before 'To' and NOT Full Harvested before 'From'.
@@ -1373,7 +1374,7 @@ else:
         f"Period: {_nc_start_date} to {_nc_end_date}. Listed farms = farms that had a Running or Partial H pond (started by the 'To' date and not Full Harvested before the 'From' date). "
         f"**Sold** = Quantity sold from {PRE_START_DAYS} days before the farm's Cycle Started Date "
         "(older purchases are not counted; returns/credits with a negative Quantity are subtracted), up to "
-        "the 'To' date. **Expected** = per pond, quantity for its DOC at the 'To' date (or at its Full H date) "
+        "the 'To' date. **Expected** = per pond, quantity for its DOC at the 'To' date (today's DOC when 'To' is the latest sale date), or at its Full H date "
         f"scaled to its Density ÷ {_NC_BASE_DENSITY:,}, summed over the farm's ponds; shown only for products "
         "that have an expected-quantity rule. Cycle Started Date = oldest pond start = latest record Date − DOC. "
         "Stocking Density = sum of each pond's latest saved Density (Full H ponds included). "
