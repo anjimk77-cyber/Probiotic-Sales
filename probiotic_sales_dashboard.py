@@ -950,7 +950,9 @@ st.markdown("---")
 # REWORKED REPORT — CATEGORY-WISE PURCHASES SINCE 10 DAYS BEFORE CYCLE START
 #
 # Pick the Product(s) and Zone(s) (plus a From / To date range). For every
-# RUNNING farm that has a started pond, the table shows:
+# farm that had a Running or Partial H pond during the selected From-To
+# period (i.e. a started pond that was not yet Full Harvested before 'From'
+# and had started by 'To'), the table shows:
 #   Customer Name | Farm Name with Code | Stocking Density | Area |
 #   then, for each selected product:  Sold  (+ Expected, where a rule exists)
 #
@@ -1060,6 +1062,9 @@ def _nc_farm_ponds(cust, farm, cap):
     _out = []
     for _, _pr in _g.iterrows():
         _s = pd.Timestamp(_pr["_PondStart"]).normalize()
+        _fd = _nc_full_date(_pr)
+        if pd.notna(_fd) and _fd < _nc_from_ts:
+            continue   # pond was already Full Harvested before the selected period began
         _e = _nc_pond_end(_pr, cap)
         _d = pd.to_numeric(_pr.get("Density", ""), errors="coerce")
         _out.append((max((_e - _s).days, 0), 0.0 if pd.isna(_d) else float(_d)))
@@ -1081,6 +1086,21 @@ def _nc_area_for(cust, farm):
         return f"{_nums.sum():,.2f}".rstrip("0").rstrip(".")
     return ", ".join(dict.fromkeys(_vals))
 
+def _nc_full_date(prow):
+    """Full Harvest date of a pond (NaT if the pond is not Full Harvested)."""
+    _t2 = str(prow.get("Harvest Type 2", "")).strip().lower()
+    _t1 = str(prow.get("Harvest Type", "")).strip().lower()
+    _fd_str = ""
+    if "full" in _t2:
+        _fd_str = str(prow.get("Harvest Date 2", "")).strip()
+    elif "full" in _t1:
+        _fd_str = str(prow.get("Harvest Date", "")).strip()
+    if _fd_str:
+        _fd = pd.to_datetime(_fd_str, errors="coerce")
+        if pd.notna(_fd):
+            return _fd.normalize()
+    return pd.NaT
+
 st.subheader(f"📦 Category-wise Purchases Since {PRE_START_DAYS} Days Before Cycle Start")
 
 # --- Date range for this report (own keys, independent of the other sections) ---
@@ -1101,6 +1121,23 @@ if not _nc_range_ok:
 _nc_from_ts = pd.Timestamp(_nc_start_date)
 _nc_to_end_ts = pd.Timestamp(_nc_end_date) + pd.Timedelta(days=1)   # exclusive upper bound (whole 'To' day included)
 _nc_cap = pd.Timestamp(_nc_end_date).normalize()                    # DOC / Full H are measured up to this date
+
+# --- Farms to list = farms with at least one started pond that was Running or Partial H at some
+#     point in the selected From-To period: started on/before 'To' and NOT Full Harvested before 'From'.
+_nc_period_keys = set()
+for _, _pr in _cs_ponds.iterrows():
+    if pd.Timestamp(_pr["_PondStart"]).normalize() >= _nc_to_end_ts:
+        continue   # pond only started after the period ended
+    _fd = _nc_full_date(_pr)
+    if pd.notna(_fd) and _fd < _nc_from_ts:
+        continue   # pond was already Full Harvested before the period began
+    _nc_period_keys.add((_pr["Customer"], _pr["Farm Name with Code"]))
+_nc_period_farms = pd.DataFrame(sorted(_nc_period_keys), columns=["Customer", "Farm Name with Code"])
+_nc_period_farms = _nc_period_farms.merge(_zone_lookup, on=["Customer", "Farm Name with Code"], how="left")
+_nc_period_farms["Zone"] = _nc_period_farms["Zone"].fillna("")
+_nc_period_farms["Customer Code"] = _nc_period_farms.apply(
+    lambda r: _customer_code_for(r["Customer"], r["Farm Name with Code"]), axis=1
+)
 
 # --- Sales rows (matched by product name, so Item No. prefixes can't hide a line) ---
 # Every sales row is kept here (even ones with an unreadable date) so nothing is silently dropped.
@@ -1137,7 +1174,7 @@ with _nc_fc1:
 
 # --- Zone filter (own key, independent of the other sections) ---
 _nc_zones_present = sorted(
-    [z for z in running_farms["Zone"].astype(str).str.strip().unique() if z and z.lower() != "nan"]
+    [z for z in _nc_period_farms["Zone"].astype(str).str.strip().unique() if z and z.lower() != "nan"]
 )
 _nc_zone_ok = True
 if _nc_zones_present:
@@ -1147,9 +1184,9 @@ if _nc_zones_present:
             key="nc_zone_filter",
         )
     _nc_zone_ok = bool(_nc_sel_zones)
-    _nc_farms = running_farms[running_farms["Zone"].astype(str).str.strip().isin(_nc_sel_zones)]
+    _nc_farms = _nc_period_farms[_nc_period_farms["Zone"].astype(str).str.strip().isin(_nc_sel_zones)]
 else:
-    _nc_farms = running_farms
+    _nc_farms = _nc_period_farms
 
 # --- Sold = purchases and returns from 10 days before each farm's Cycle Started Date
 #     up to the 'To' date (past purchases before that are not counted) ---
@@ -1322,7 +1359,8 @@ elif not _nc_sel_products:
 elif not _nc_zone_ok:
     st.info("Select at least one zone above to display this report.")
 elif len(_nc_rows) == 0:
-    st.info("No running farm with a started pond was found.")
+    st.info("No farm had a Running or Partial H pond in the selected period "
+            f"({_nc_start_date} to {_nc_end_date}).")
 else:
     _nc_df = pd.DataFrame(
         _nc_rows,
@@ -1332,14 +1370,14 @@ else:
     )
     st.dataframe(_nc_df, use_container_width=True, hide_index=True)
     st.caption(
-        f"Period: {_nc_start_date} to {_nc_end_date}. Every running farm with a started pond is listed. "
+        f"Period: {_nc_start_date} to {_nc_end_date}. Listed farms = farms that had a Running or Partial H pond (started by the 'To' date and not Full Harvested before the 'From' date). "
         f"**Sold** = Quantity sold from {PRE_START_DAYS} days before the farm's Cycle Started Date "
         "(older purchases are not counted; returns/credits with a negative Quantity are subtracted), up to "
         "the 'To' date. **Expected** = per pond, quantity for its DOC at the 'To' date (or at its Full H date) "
         f"scaled to its Density ÷ {_NC_BASE_DENSITY:,}, summed over the farm's ponds; shown only for products "
         "that have an expected-quantity rule. Cycle Started Date = oldest pond start = latest record Date − DOC. "
         "Stocking Density = sum of each pond's latest saved Density (Full H ponds included). "
-        f"{_nc_skipped} running farm(s) without a started pond are left out."
+        "Ponds already Full Harvested before the 'From' date are not used for Expected."
     )
     with st.expander("🔍 Sales lines behind the Sold columns (counted and not counted)"):
         if _nc_detail_rows:
