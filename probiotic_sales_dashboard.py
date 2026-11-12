@@ -955,9 +955,9 @@ st.markdown("---")
 #   then, for each selected product:  Sold  (+ Expected, where a rule exists)
 #
 #   Sold     = Quantity sold (matched on the farm's Customer Code and the
-#              product's Item Description) ON or AFTER the date 10 days
-#              before the farm's Cycle Started Date, up to the selected
-#              'To' date. (The 'From' date no longer limits Sold.)
+#              product's Item Description): EVERY purchase and return on
+#              record, up to the selected 'To' date. Neither the 'From' date
+#              nor the Cycle Started Date limits it.
 #              Returns / credit notes (negative Quantity) are included, so
 #              4 + 2 + (-3) = 3.
 #   Expected = sum over the farm's ponds of
@@ -1150,12 +1150,7 @@ if _nc_zones_present:
 else:
     _nc_farms = running_farms
 
-# --- Which purchases does "Sold" add up? ---
-_nc_use_window = st.checkbox(
-    f"Only count purchases made from {PRE_START_DAYS} days before each farm's Cycle Started Date "
-    "(untick = add up ALL purchases of the selected product up to the To date)",
-    value=False, key="nc_use_window",
-)
+# --- Sold = every purchase and return up to the 'To' date (no lower date limit) ---
 
 # --- Stocking Density per farm = sum of each pond's latest saved Density ---
 _nc_dens_by_farm = {}
@@ -1200,12 +1195,9 @@ for _, _f in (_nc_farms if (_nc_range_ok and _nc_sel_products) else _nc_farms.il
         # Farm's cycle only started after the selected period ended -> not running in it.
         _nc_not_in_period += 1
         continue
-    _from = _start - pd.Timedelta(days=PRE_START_DAYS)
-    # Sold window: sums EVERY sale line (purchases and returns/negatives) from the start of the
-    # window up to the 'To' date. The 'From' date does NOT cut purchases off, so 4 + 2 + (-3) = 3.
-    #   ticked   -> from 10 days before the farm's Cycle Started Date
-    #   unticked -> every purchase on record (no lower date limit)
-    _win_from = _from if _nc_use_window else pd.Timestamp("1900-01-01")
+    # Sold sums EVERY sale line (purchases and returns/negatives) up to the 'To' date.
+    # No lower date limit, so 5 + 2 + (-3) = 4.
+    _win_from = pd.Timestamp("1900-01-01")
     _code = str(_f["Customer Code"]).strip().lower()
     if _code:
         _lines = _nc_sales_all[(_nc_sales_all["_CodeKey"] == _code) & _nc_sales_all["_MatchKey"].notna()]
@@ -1344,8 +1336,7 @@ else:
     st.dataframe(_nc_df, use_container_width=True, hide_index=True)
     st.caption(
         f"Period: {_nc_start_date} to {_nc_end_date}. Only running farms whose cycle had started by the 'To' "
-        f"date are listed. **Sold** = Quantity sold (returns/credits with a negative Quantity are subtracted) from "
-        f"{'the date ' + str(PRE_START_DAYS) + ' days before the farm' + chr(39) + 's Cycle Started Date' if _nc_use_window else 'the earliest sale on record (every purchase is added up)'}, up to "
+        "date are listed. **Sold** = every purchase on record (returns/credits with a negative Quantity are subtracted), up to "
         "the 'To' date. **Expected** = per pond, quantity for its DOC at the 'To' date (or at its Full H date) "
         f"scaled to its Density ÷ {_NC_BASE_DENSITY:,}, summed over the farm's ponds; shown only for products "
         "that have an expected-quantity rule. Cycle Started Date = oldest pond start = latest record Date − DOC. "
