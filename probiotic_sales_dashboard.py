@@ -947,21 +947,41 @@ else:
 st.markdown("---")
 
 # =========================================================================
-# NEW REPORT — CATEGORY-WISE PURCHASES SINCE 10 DAYS BEFORE CYCLE START
+# REWORKED REPORT — CATEGORY-WISE PURCHASES SINCE 10 DAYS BEFORE CYCLE START
 #
-# For every RUNNING farm (with a started pond):
-#   Customer Code | Customer Name | Farm Name with Code | Cycle Started Date |
-#   Date (10 Days Before Cycle Start) | Total Density |
-#   then one column per product, grouped under its main Category header row.
-# Each product cell = Quantity sold ON or AFTER the "10 days before" date,
-# matched on the farm's Customer Code, for Item No. starting with
-# PROB / OTH / CHEM. Downloadable as CSV and PDF. View-only.
+# Pick the Product(s) and Zone(s) (plus a From / To date range). For every
+# RUNNING farm that has a started pond, the table shows:
+#   Customer Name | Farm Name with Code | Stocking Density | Area |
+#   then, for each selected product:  Sold  (+ Expected, where a rule exists)
+#
+#   Sold     = Quantity sold (matched on the farm's Customer Code and the
+#              product's Item Description) ON or AFTER the date 10 days
+#              before the farm's Cycle Started Date (and not before the
+#              selected 'From' date), up to the selected 'To' date.
+#              Returns / credit notes (negative Quantity) are included, so
+#              4 + 2 + (-3) = 3.
+#   Expected = sum over the farm's ponds of
+#              (quantity for that pond's DOC at the 'To' date, per 100,000
+#               stocking density)  x  (pond Density / 100,000)
+#              Quantity per 100,000 density is accumulated per 10 days of DOC:
+#                Envomin- 10kg Bgs         : 1 per 10 days
+#                Magnesium Sulphate - 25kg : 0.5 per 10 days up to DOC 30,
+#                                            then 1 per 10 days
+#                Eco Pro - 20Lt Can        : 1/20 per 10 days up to DOC 60,
+#                                            then 2.5/20 per 10 days
+#                Clinzex DS - 10kg Bgs     : 0.5 per 10 days up to DOC 60,
+#                                            then 1 per 10 days
+#              e.g. Envomin, two ponds of 100,000 at DOC 30 and 45 -> 3 + 4.5 = 7.5
+# Pond DOC = (pond end date - pond start date), where start = latest record
+# Date - DOC and end = the 'To' date (or the pond's Full H date if earlier).
+# Downloadable as CSV and PDF. View-only; nothing is written anywhere.
 # =========================================================================
 import re as _re
 import csv as _csv
 
 _NC_PREFIX_REGEX = r"^(?:PROB|OTH|CHEM)"
 
+# Products offered in the selector (grouped here only for readability).
 _NC_CATEGORIES = {
     "Mineral": [
         "Envomin- 10kg Bgs", "Clinzex DS - 10kg Bgs", "OSMIN - 1Kg Pck",
@@ -984,12 +1004,81 @@ _NC_CATEGORIES = {
         "Aqua Oxy Ganule - 10 Kg", "Aqua Oxy Ganule - 25 Kg", "BIOCURB - 1Kg",
     ],
 }
-_NC_UNLISTED_CATEGORY = "Other (not in category list)"
+
+# Expected-quantity rules. Each rule is a list of (up_to_DOC, quantity per
+# 10 days of DOC) tiers for a pond stocked at _NC_BASE_DENSITY. up_to_DOC
+# None = no upper limit. Quantity is accumulated tier by tier.
+_NC_BASE_DENSITY = 100000
+_NC_EXPECTED_RULES = {
+    "Envomin- 10kg Bgs":         [(None, 1.0)],
+    "Magnesium Sulphate - 25kg": [(30, 0.5), (None, 1.0)],
+    "Eco Pro - 20Lt Can":        [(60, 1 / 20), (None, 2.5 / 20)],
+    "Clinzex DS - 10kg Bgs":     [(60, 0.5), (None, 1.0)],
+}
 
 def _nc_norm(s):
     # Ignore case, spaces and punctuation so small spelling/spacing
     # differences between this list and the Sales sheet still match.
     return _re.sub(r"[^a-z0-9]", "", str(s).lower())
+
+_NC_RULES_NORM = {_nc_norm(_k): _v for _k, _v in _NC_EXPECTED_RULES.items()}
+
+def _nc_expected_per_base(tiers, doc):
+    """Quantity for ONE pond of _NC_BASE_DENSITY that is `doc` days old."""
+    if doc <= 0:
+        return 0.0
+    _total, _prev = 0.0, 0
+    for _upto, _rate in tiers:
+        _top = doc if _upto is None else min(doc, _upto)
+        if _top > _prev:
+            _total += (_top - _prev) / 10.0 * _rate
+            _prev = _top
+        if _upto is None or doc <= _upto:
+            break
+    return _total
+
+def _nc_pond_end(prow, cap):
+    """Pond end date = its Full H date if it has one (and it is earlier than
+    `cap`), otherwise `cap`."""
+    _t2 = str(prow.get("Harvest Type 2", "")).strip().lower()
+    _t1 = str(prow.get("Harvest Type", "")).strip().lower()
+    _fd_str = ""
+    if "full" in _t2:
+        _fd_str = str(prow.get("Harvest Date 2", "")).strip()
+    elif "full" in _t1:
+        _fd_str = str(prow.get("Harvest Date", "")).strip()
+    if _fd_str:
+        _fd = pd.to_datetime(_fd_str, errors="coerce")
+        if pd.notna(_fd):
+            return min(_fd.normalize(), cap)
+    return cap
+
+def _nc_farm_ponds(cust, farm, cap):
+    """[(pond DOC at `cap`, pond Density), ...] for every started pond of a farm."""
+    _g = _cs_ponds[(_cs_ponds["Customer"] == cust) & (_cs_ponds["Farm Name with Code"] == farm)]
+    _out = []
+    for _, _pr in _g.iterrows():
+        _s = pd.Timestamp(_pr["_PondStart"]).normalize()
+        _e = _nc_pond_end(_pr, cap)
+        _d = pd.to_numeric(_pr.get("Density", ""), errors="coerce")
+        _out.append((max((_e - _s).days, 0), 0.0 if pd.isna(_d) else float(_d)))
+    return _out
+
+def _nc_area_for(cust, farm):
+    """Area of a farm from the main sheet's 'Area' column (all distinct
+    non-blank values, or the sum if every value is numeric)."""
+    if "Area" not in _latest_per_pond.columns:
+        return ""
+    _g = _latest_per_pond[
+        (_latest_per_pond["Customer"] == cust) & (_latest_per_pond["Farm Name with Code"] == farm)
+    ]
+    _vals = [str(v).strip() for v in _g["Area"] if str(v).strip() and str(v).strip().lower() != "nan"]
+    if not _vals:
+        return ""
+    _nums = pd.to_numeric(pd.Series(_vals), errors="coerce")
+    if _nums.notna().all():
+        return f"{_nums.sum():,.2f}".rstrip("0").rstrip(".")
+    return ", ".join(dict.fromkeys(_vals))
 
 st.subheader(f"📦 Category-wise Purchases Since {PRE_START_DAYS} Days Before Cycle Start")
 
@@ -1010,6 +1099,35 @@ if not _nc_range_ok:
     st.error("❌ 'From' date must be on or before 'To' date.")
 _nc_from_ts = pd.Timestamp(_nc_start_date)
 _nc_to_end_ts = pd.Timestamp(_nc_end_date) + pd.Timedelta(days=1)   # exclusive upper bound (whole 'To' day included)
+_nc_cap = pd.Timestamp(_nc_end_date).normalize()                    # DOC / Full H are measured up to this date
+
+# --- Sales rows (matched by product name, so Item No. prefixes can't hide a line) ---
+_nc_sales = df_sales[df_sales["_ParsedDate"].notna()].copy()
+_nc_sales["_CodeKey"] = _nc_sales["Customer Code"].astype(str).str.strip().str.lower()
+_nc_sales["_Norm"] = _nc_sales["Item Description"].apply(_nc_norm)
+
+# --- Product options: the listed products + any other PROB / OTH / CHEM item found in sales ---
+_nc_listed = [_it for _items in _NC_CATEGORIES.values() for _it in _items]
+_nc_known = {_nc_norm(_it) for _it in _nc_listed}
+_nc_pref_desc = (
+    df_sales.loc[
+        df_sales["Item No."].astype(str).str.strip().str.upper().str.contains(_NC_PREFIX_REGEX, regex=True),
+        "Item Description",
+    ].astype(str).str.strip()
+)
+_nc_unlisted_names = [
+    _d for _d in dict.fromkeys(_nc_pref_desc)
+    if _d and _d.lower() != "nan" and _nc_norm(_d) not in _nc_known
+]
+_nc_product_options = _nc_listed + _nc_unlisted_names
+_nc_default_products = [_p for _p in _NC_EXPECTED_RULES if _p in _nc_product_options]
+
+_nc_fc1, _nc_fc2 = st.columns(2)
+with _nc_fc1:
+    _nc_sel_products = st.multiselect(
+        "Select Probiotic / Product(s)", options=_nc_product_options,
+        default=_nc_default_products, key="nc_product_filter",
+    )
 
 # --- Zone filter (own key, independent of the other sections) ---
 _nc_zones_present = sorted(
@@ -1017,55 +1135,37 @@ _nc_zones_present = sorted(
 )
 _nc_zone_ok = True
 if _nc_zones_present:
-    _nc_sel_zones = st.multiselect(
-        "Select Zone(s)", options=_nc_zones_present, default=_nc_zones_present,
-        key="nc_zone_filter",
-    )
+    with _nc_fc2:
+        _nc_sel_zones = st.multiselect(
+            "Select Zone(s)", options=_nc_zones_present, default=_nc_zones_present,
+            key="nc_zone_filter",
+        )
     _nc_zone_ok = bool(_nc_sel_zones)
     _nc_farms = running_farms[running_farms["Zone"].astype(str).str.strip().isin(_nc_sel_zones)]
 else:
     _nc_farms = running_farms
 
-# --- Total Density per farm = sum of each pond's latest saved Density ---
+# --- Stocking Density per farm = sum of each pond's latest saved Density ---
 _nc_dens_by_farm = {}
 if len(_latest_per_pond) > 0 and "Density" in _latest_per_pond.columns:
     _tmp = _latest_per_pond.copy()
     _tmp["_Dens"] = pd.to_numeric(_tmp["Density"], errors="coerce").fillna(0)
     _nc_dens_by_farm = _tmp.groupby(["Customer", "Farm Name with Code"])["_Dens"].sum().to_dict()
 
-# --- Sales rows for PROB / OTH / CHEM items ---
-_nc_sales = df_sales[
-    df_sales["Item No."].astype(str).str.strip().str.upper().str.contains(_NC_PREFIX_REGEX, regex=True)
-    & df_sales["_ParsedDate"].notna()
-].copy()
-_nc_sales["_CodeKey"] = _nc_sales["Customer Code"].astype(str).str.strip().str.lower()
-_nc_sales["_Norm"] = _nc_sales["Item Description"].apply(_nc_norm)
-
-# --- Column layout: (category, display name, normalised key) ---
-_nc_item_cols = []
-_nc_known = set()
-for _cat, _items in _NC_CATEGORIES.items():
-    for _it in _items:
-        _nc_item_cols.append((_cat, _it, _nc_norm(_it)))
-        _nc_known.add(_nc_norm(_it))
-
-# Items that were sold but aren't in the category list: keep them visible.
-_nc_unlisted = (
-    _nc_sales.loc[~_nc_sales["_Norm"].isin(_nc_known), ["_Norm", "Item Description"]]
-    .assign(**{"Item Description": lambda d: d["Item Description"].astype(str).str.strip()})
-    .drop_duplicates(subset="_Norm")
-)
-for _, _r in _nc_unlisted.iterrows():
-    _nc_item_cols.append((_NC_UNLISTED_CATEGORY, _r["Item Description"], _r["_Norm"]))
-
-_NC_ID_COLS = ["Customer Code", "Customer Name", "Farm Name with Code",
-               "Cycle Started Date", f"Date ({PRE_START_DAYS} Days Before Cycle Start)",
-               "Total Density"]
+# --- Column layout: (top header, bottom header) ---
+_NC_ID_COLS = ["Customer Name", "Farm Name with Code", "Stocking Density", "Area"]
+_nc_sel_norms = [_nc_norm(_p) for _p in _nc_sel_products]
+_nc_col_tuples = [("", _c) for _c in _NC_ID_COLS]
+for _p, _pn in zip(_nc_sel_products, _nc_sel_norms):
+    _nc_col_tuples.append((_p, "Sold"))
+    if _pn in _NC_RULES_NORM:
+        _nc_col_tuples.append((_p, "Expected"))
 
 _nc_rows = []
+_nc_detail_rows = []
 _nc_skipped = 0
 _nc_not_in_period = 0
-for _, _f in (_nc_farms if _nc_range_ok else _nc_farms.iloc[0:0]).iterrows():
+for _, _f in (_nc_farms if (_nc_range_ok and _nc_sel_products) else _nc_farms.iloc[0:0]).iterrows():
     _start = _cs_by_farm.get((_f["Customer"], _f["Farm Name with Code"]))
     if _start is None or pd.isna(_start):
         _nc_skipped += 1
@@ -1080,40 +1180,50 @@ for _, _f in (_nc_farms if _nc_range_ok else _nc_farms.iloc[0:0]).iterrows():
     if _code:
         _sub = _nc_sales[
             (_nc_sales["_CodeKey"] == _code)
+            & _nc_sales["_Norm"].isin(_nc_sel_norms)
             & (_nc_sales["_ParsedDate"] >= _win_from)
             & (_nc_sales["_ParsedDate"] < _nc_to_end_ts)
         ]
         _sums = _sub.groupby("_Norm")["Quantity"].sum()
+        for _, _sr in _sub.sort_values("_ParsedDate").iterrows():
+            _nc_detail_rows.append([
+                _f["Customer"], _f["Farm Name with Code"], _sr["_ParsedDate"].strftime("%Y-%m-%d"),
+                str(_sr["Item Description"]).strip(), float(_sr["Quantity"]),
+            ])
     else:
         _sums = pd.Series(dtype=float)
+
+    _ponds = _nc_farm_ponds(_f["Customer"], _f["Farm Name with Code"], _nc_cap)
     _row = [
-        str(_f["Customer Code"]), _f["Customer"], _f["Farm Name with Code"],
-        _start.strftime("%Y-%m-%d"), _from.strftime("%Y-%m-%d"),
-        float(_nc_dens_by_farm.get((_f["Customer"], _f["Farm Name with Code"]), 0)),
+        _f["Customer"], _f["Farm Name with Code"],
+        int(round(float(_nc_dens_by_farm.get((_f["Customer"], _f["Farm Name with Code"]), 0)))),
+        _nc_area_for(_f["Customer"], _f["Farm Name with Code"]),
     ]
-    for _cat, _it, _key in _nc_item_cols:
-        _row.append(float(_sums.get(_key, 0)))
+    for _pn in _nc_sel_norms:
+        _row.append(round(float(_sums.get(_pn, 0)), 2))
+        if _pn in _NC_RULES_NORM:
+            _exp = sum(
+                _nc_expected_per_base(_NC_RULES_NORM[_pn], _doc) * (_dens / _NC_BASE_DENSITY)
+                for _doc, _dens in _ponds
+            )
+            _row.append(round(_exp, 2))
     _nc_rows.append(_row)
 
-# Two-level header: top = Category, bottom = product / column name.
-_nc_header_cat = [""] * len(_NC_ID_COLS) + [c for c, _, _ in _nc_item_cols]
-_nc_header_item = _NC_ID_COLS + [i for _, i, _ in _nc_item_cols]
-
 def _nc_fmt(v):
-    if isinstance(v, float):
-        return f"{v:,.0f}" if v.is_integer() else f"{v:,.2f}"
+    if isinstance(v, (int, float)):
+        return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
     return str(v)
 
 def _nc_build_csv():
     buf = io.StringIO()
     w = _csv.writer(buf)
-    # Category shown once at the first column of each group (blank after).
+    # Product shown once at the first column of each group (blank after).
     _top, _prev = [], None
-    for c in _nc_header_cat:
-        _top.append(c if c and c != _prev else "")
-        _prev = c if c else _prev
+    for _t, _ in _nc_col_tuples:
+        _top.append(_t if _t and _t != _prev else "")
+        _prev = _t if _t else _prev
     w.writerow(_top)
-    w.writerow(_nc_header_item)
+    w.writerow([_b for _, _b in _nc_col_tuples])
     for r in _nc_rows:
         w.writerow(r)
     return buf.getvalue()
@@ -1126,22 +1236,23 @@ def _nc_build_pdf():
 
     _hs = ParagraphStyle("nc_h", fontName="Helvetica-Bold", fontSize=6, leading=7, alignment=1)
     _ts = ParagraphStyle("nc_t", fontName="Helvetica-Bold", fontSize=12, leading=14)
-    _n_id, _n_all = len(_NC_ID_COLS), len(_nc_header_item)
+    _n_id, _n_all = len(_NC_ID_COLS), len(_nc_col_tuples)
 
-    row0 = [Paragraph(_pt_esc(_nc_header_item[i]), _hs) if i < _n_id else "" for i in range(_n_all)]
+    row0 = [Paragraph(_pt_esc(_nc_col_tuples[i][1]), _hs) if i < _n_id else "" for i in range(_n_all)]
     row1 = [""] * _n_all
+    for _c in range(_n_id, _n_all):
+        row1[_c] = Paragraph(_pt_esc(_nc_col_tuples[_c][1]), _hs)
     _spans, _i = [], _n_id
     while _i < _n_all:
         _j = _i
-        while _j + 1 < _n_all and _nc_header_cat[_j + 1] == _nc_header_cat[_i]:
+        while _j + 1 < _n_all and _nc_col_tuples[_j + 1][0] == _nc_col_tuples[_i][0]:
             _j += 1
-        row0[_i] = Paragraph(_pt_esc(_nc_header_cat[_i]), _hs)
-        _spans.append(("SPAN", (_i, 0), (_j, 0)))
+        row0[_i] = Paragraph(_pt_esc(_nc_col_tuples[_i][0]), _hs)
+        if _j > _i:
+            _spans.append(("SPAN", (_i, 0), (_j, 0)))
         _i = _j + 1
     for _c in range(_n_id):
         _spans.append(("SPAN", (_c, 0), (_c, 1)))
-    for _c in range(_n_id, _n_all):
-        row1[_c] = Paragraph(_pt_esc(_nc_header_item[_c]), _hs)
 
     data = [row0, row1]
     for r in _nc_rows:
@@ -1149,7 +1260,7 @@ def _nc_build_pdf():
 
     _page = landscape(A3)
     _usable = _page[0] - 40
-    _id_w = [45, 85, 100, 52, 62, 45]
+    _id_w = [95, 115, 55, 70]
     _item_w = max(24, (_usable - sum(_id_w)) / max(1, _n_all - _n_id))
     _widths = _id_w + [_item_w] * (_n_all - _n_id)
 
@@ -1158,7 +1269,8 @@ def _nc_build_pdf():
         ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
         ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#dbe5f7")),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ALIGN", (_n_id - 1, 2), (-1, -1), "RIGHT"),
+        ("ALIGN", (2, 2), (2, -1), "RIGHT"),
+        ("ALIGN", (_n_id, 2), (-1, -1), "RIGHT"),
         ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, colors.HexColor("#f6f8fc")]),
     ] + _spans
 
@@ -1176,6 +1288,8 @@ def _nc_build_pdf():
 
 if not _nc_range_ok:
     pass   # error already shown above the filters
+elif not _nc_sel_products:
+    st.info("Select at least one product above to display this report.")
 elif not _nc_zone_ok:
     st.info("Select at least one zone above to display this report.")
 elif len(_nc_rows) == 0:
@@ -1184,20 +1298,31 @@ elif len(_nc_rows) == 0:
 else:
     _nc_df = pd.DataFrame(
         _nc_rows,
-        columns=pd.MultiIndex.from_arrays([
-            [c if c else " " for c in _nc_header_cat], _nc_header_item
-        ]),
+        columns=pd.MultiIndex.from_tuples(
+            [(_t if _t else " ", _b) for _t, _b in _nc_col_tuples]
+        ),
     )
     st.dataframe(_nc_df, use_container_width=True, hide_index=True)
     st.caption(
         f"Period: {_nc_start_date} to {_nc_end_date}. Only running farms whose cycle had started by the 'To' "
-        f"date are listed. Each product cell = Quantity sold from the later of (the date {PRE_START_DAYS} days "
-        "before the farm's Cycle Started Date) and the 'From' date, up to the 'To' date "
-        "(Cycle Started Date = oldest pond start = latest record Date − DOC). Item No. starting with "
-        "PROB / OTH / CHEM. Total Density = sum of each pond's latest saved Density (Full H ponds included). "
+        f"date are listed. **Sold** = Quantity sold (returns/credits with a negative Quantity included) from the "
+        f"later of (the date {PRE_START_DAYS} days before the farm's Cycle Started Date) and the 'From' date, up to "
+        "the 'To' date. **Expected** = per pond, quantity for its DOC at the 'To' date (or at its Full H date) "
+        f"scaled to its Density ÷ {_NC_BASE_DENSITY:,}, summed over the farm's ponds; shown only for products "
+        "that have an expected-quantity rule. Cycle Started Date = oldest pond start = latest record Date − DOC. "
+        "Stocking Density = sum of each pond's latest saved Density (Full H ponds included). "
         f"{_nc_skipped} running farm(s) without a started pond and {_nc_not_in_period} farm(s) that started "
         "after the period are left out."
     )
+    with st.expander("🔍 Sales lines counted in the Sold columns (for checking)"):
+        if _nc_detail_rows:
+            st.dataframe(
+                pd.DataFrame(_nc_detail_rows,
+                             columns=["Customer Name", "Farm Name with Code", "Date", "Item Description", "Quantity"]),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.write("No sales lines found for the selected products in the window.")
     _nc_d1, _nc_d2 = st.columns(2)
     with _nc_d1:
         st.download_button(
