@@ -1187,15 +1187,10 @@ for _p, _pn in zip(_nc_sel_products, _nc_sel_norms):
 _nc_rows = []
 _nc_detail_rows = []
 _nc_skipped = 0
-_nc_not_in_period = 0
 for _, _f in (_nc_farms if (_nc_range_ok and _nc_sel_products) else _nc_farms.iloc[0:0]).iterrows():
     _start = _cs_by_farm.get((_f["Customer"], _f["Farm Name with Code"]))
     if _start is None or pd.isna(_start):
         _nc_skipped += 1
-        continue
-    if _start >= _nc_to_end_ts:
-        # Farm's cycle only started after the selected period ended -> not running in it.
-        _nc_not_in_period += 1
         continue
     # Sold sums every sale line (purchases and returns/negatives) from 10 days before the farm's
     # Cycle Started Date up to the 'To' date. Older purchases are ignored. The 'From' date does
@@ -1327,8 +1322,7 @@ elif not _nc_sel_products:
 elif not _nc_zone_ok:
     st.info("Select at least one zone above to display this report.")
 elif len(_nc_rows) == 0:
-    st.info("No running farm with a started pond falls in the selected period "
-            f"({_nc_start_date} to {_nc_end_date}).")
+    st.info("No running farm with a started pond was found.")
 else:
     _nc_df = pd.DataFrame(
         _nc_rows,
@@ -1338,15 +1332,14 @@ else:
     )
     st.dataframe(_nc_df, use_container_width=True, hide_index=True)
     st.caption(
-        f"Period: {_nc_start_date} to {_nc_end_date}. Only running farms whose cycle had started by the 'To' "
-        f"date are listed. **Sold** = Quantity sold from {PRE_START_DAYS} days before the farm's Cycle Started Date "
+        f"Period: {_nc_start_date} to {_nc_end_date}. Every running farm with a started pond is listed. "
+        f"**Sold** = Quantity sold from {PRE_START_DAYS} days before the farm's Cycle Started Date "
         "(older purchases are not counted; returns/credits with a negative Quantity are subtracted), up to "
         "the 'To' date. **Expected** = per pond, quantity for its DOC at the 'To' date (or at its Full H date) "
         f"scaled to its Density ÷ {_NC_BASE_DENSITY:,}, summed over the farm's ponds; shown only for products "
         "that have an expected-quantity rule. Cycle Started Date = oldest pond start = latest record Date − DOC. "
         "Stocking Density = sum of each pond's latest saved Density (Full H ponds included). "
-        f"{_nc_skipped} running farm(s) without a started pond and {_nc_not_in_period} farm(s) that started "
-        "after the period are left out."
+        f"{_nc_skipped} running farm(s) without a started pond are left out."
     )
     with st.expander("🔍 Sales lines behind the Sold columns (counted and not counted)"):
         if _nc_detail_rows:
