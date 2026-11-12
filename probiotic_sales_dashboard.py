@@ -1150,6 +1150,13 @@ if _nc_zones_present:
 else:
     _nc_farms = running_farms
 
+# --- Which purchases does "Sold" add up? ---
+_nc_use_window = st.checkbox(
+    f"Only count purchases made from {PRE_START_DAYS} days before each farm's Cycle Started Date "
+    "(untick = add up ALL purchases of the selected product in the From–To range)",
+    value=False, key="nc_use_window",
+)
+
 # --- Stocking Density per farm = sum of each pond's latest saved Density ---
 _nc_dens_by_farm = {}
 if len(_latest_per_pond) > 0 and "Density" in _latest_per_pond.columns:
@@ -1194,7 +1201,8 @@ for _, _f in (_nc_farms if (_nc_range_ok and _nc_sel_products) else _nc_farms.il
         _nc_not_in_period += 1
         continue
     _from = _start - pd.Timedelta(days=PRE_START_DAYS)
-    _win_from = max(_from, _nc_from_ts)   # count from the later of (10 days before start) and 'From'
+    # Sold window: every purchase in From..To, or (if ticked) only from 10 days before the cycle start.
+    _win_from = max(_from, _nc_from_ts) if _nc_use_window else _nc_from_ts
     _code = str(_f["Customer Code"]).strip().lower()
     if _code:
         _lines = _nc_sales_all[(_nc_sales_all["_CodeKey"] == _code) & _nc_sales_all["_MatchKey"].notna()]
@@ -1334,7 +1342,7 @@ else:
     st.caption(
         f"Period: {_nc_start_date} to {_nc_end_date}. Only running farms whose cycle had started by the 'To' "
         f"date are listed. **Sold** = Quantity sold (returns/credits with a negative Quantity included) from the "
-        f"later of (the date {PRE_START_DAYS} days before the farm's Cycle Started Date) and the 'From' date, up to "
+        f"{'later of (the date ' + str(PRE_START_DAYS) + ' days before the farm' + chr(39) + 's Cycle Started Date) and the ' + chr(39) + 'From' + chr(39) + ' date' if _nc_use_window else 'the ' + chr(39) + 'From' + chr(39) + ' date (every purchase in the range is added up)'}, up to "
         "the 'To' date. **Expected** = per pond, quantity for its DOC at the 'To' date (or at its Full H date) "
         f"scaled to its Density ÷ {_NC_BASE_DENSITY:,}, summed over the farm's ponds; shown only for products "
         "that have an expected-quantity rule. Cycle Started Date = oldest pond start = latest record Date − DOC. "
