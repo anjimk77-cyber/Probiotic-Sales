@@ -1102,9 +1102,14 @@ _nc_to_end_ts = pd.Timestamp(_nc_end_date) + pd.Timedelta(days=1)   # exclusive 
 _nc_cap = pd.Timestamp(_nc_end_date).normalize()                    # DOC / Full H are measured up to this date
 
 # --- Sales rows (matched by product name, so Item No. prefixes can't hide a line) ---
-_nc_sales = df_sales[df_sales["_ParsedDate"].notna()].copy()
-_nc_sales["_CodeKey"] = _nc_sales["Customer Code"].astype(str).str.strip().str.lower()
-_nc_sales["_Norm"] = _nc_sales["Item Description"].apply(_nc_norm)
+# Every sales row is kept here (even ones with an unreadable date) so nothing is silently dropped.
+# Dates the default parser can't read are retried day-first (dd/mm/yyyy).
+_nc_sales_all = df_sales.copy()
+_nc_sales_all["_NcDate"] = df_sales["_ParsedDate"].fillna(
+    pd.to_datetime(df_sales["Date"], errors="coerce", dayfirst=True)
+)
+_nc_sales_all["_CodeKey"] = _nc_sales_all["Customer Code"].astype(str).str.strip().str.lower()
+_nc_sales_all["_Norm"] = _nc_sales_all["Item Description"].apply(_nc_norm)
 
 # --- Product options: the listed products + any other PROB / OTH / CHEM item found in sales ---
 _nc_listed = [_it for _items in _NC_CATEGORIES.values() for _it in _items]
@@ -1155,6 +1160,20 @@ if len(_latest_per_pond) > 0 and "Density" in _latest_per_pond.columns:
 # --- Column layout: (top header, bottom header) ---
 _NC_ID_COLS = ["Customer Name", "Farm Name with Code", "Stocking Density", "Area"]
 _nc_sel_norms = [_nc_norm(_p) for _p in _nc_sel_products]
+_nc_sel_set = set(_nc_sel_norms)
+
+def _nc_match_key(n):
+    # Exact (normalised) name match, or one name contained in the other, so small
+    # naming differences between sales lines (e.g. returns) still land on the product.
+    if n in _nc_sel_set:
+        return n
+    if len(n) >= 6:
+        for _s in _nc_sel_norms:
+            if len(_s) >= 6 and (_s in n or n in _s):
+                return _s
+    return None
+
+_nc_sales_all["_MatchKey"] = _nc_sales_all["_Norm"].apply(_nc_match_key)
 _nc_col_tuples = [("", _c) for _c in _NC_ID_COLS]
 for _p, _pn in zip(_nc_sel_products, _nc_sel_norms):
     _nc_col_tuples.append((_p, "Sold"))
@@ -1178,17 +1197,26 @@ for _, _f in (_nc_farms if (_nc_range_ok and _nc_sel_products) else _nc_farms.il
     _win_from = max(_from, _nc_from_ts)   # count from the later of (10 days before start) and 'From'
     _code = str(_f["Customer Code"]).strip().lower()
     if _code:
-        _sub = _nc_sales[
-            (_nc_sales["_CodeKey"] == _code)
-            & _nc_sales["_Norm"].isin(_nc_sel_norms)
-            & (_nc_sales["_ParsedDate"] >= _win_from)
-            & (_nc_sales["_ParsedDate"] < _nc_to_end_ts)
-        ]
-        _sums = _sub.groupby("_Norm")["Quantity"].sum()
-        for _, _sr in _sub.sort_values("_ParsedDate").iterrows():
+        _lines = _nc_sales_all[(_nc_sales_all["_CodeKey"] == _code) & _nc_sales_all["_MatchKey"].notna()]
+        _in_win = (
+            _lines["_NcDate"].notna()
+            & (_lines["_NcDate"] >= _win_from)
+            & (_lines["_NcDate"] < _nc_to_end_ts)
+        )
+        _sub = _lines[_in_win]
+        _sums = _sub.groupby("_MatchKey")["Quantity"].sum()
+        for _, _sr in _lines.sort_values("_NcDate").iterrows():
+            if pd.isna(_sr["_NcDate"]):
+                _status, _ds = "Not counted - date unreadable", str(_sr["Date"])
+            elif _sr["_NcDate"] < _win_from:
+                _status, _ds = f"Not counted - before {_win_from:%Y-%m-%d}", f"{_sr['_NcDate']:%Y-%m-%d}"
+            elif _sr["_NcDate"] >= _nc_to_end_ts:
+                _status, _ds = "Not counted - after 'To' date", f"{_sr['_NcDate']:%Y-%m-%d}"
+            else:
+                _status, _ds = "Counted", f"{_sr['_NcDate']:%Y-%m-%d}"
             _nc_detail_rows.append([
-                _f["Customer"], _f["Farm Name with Code"], _sr["_ParsedDate"].strftime("%Y-%m-%d"),
-                str(_sr["Item Description"]).strip(), float(_sr["Quantity"]),
+                _f["Customer"], _f["Farm Name with Code"], _ds,
+                str(_sr["Item Description"]).strip(), float(_sr["Quantity"]), _status,
             ])
     else:
         _sums = pd.Series(dtype=float)
@@ -1314,15 +1342,15 @@ else:
         f"{_nc_skipped} running farm(s) without a started pond and {_nc_not_in_period} farm(s) that started "
         "after the period are left out."
     )
-    with st.expander("🔍 Sales lines counted in the Sold columns (for checking)"):
+    with st.expander("🔍 Sales lines behind the Sold columns (counted and not counted)"):
         if _nc_detail_rows:
             st.dataframe(
                 pd.DataFrame(_nc_detail_rows,
-                             columns=["Customer Name", "Farm Name with Code", "Date", "Item Description", "Quantity"]),
+                             columns=["Customer Name", "Farm Name with Code", "Date", "Item Description", "Quantity", "Status"]),
                 use_container_width=True, hide_index=True,
             )
         else:
-            st.write("No sales lines found for the selected products in the window.")
+            st.write("No sales lines found for the selected products.")
     _nc_d1, _nc_d2 = st.columns(2)
     with _nc_d1:
         st.download_button(
