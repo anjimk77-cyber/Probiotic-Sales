@@ -956,6 +956,7 @@ st.markdown("---")
 #   Customer Name | Farm Name with Code | Stocking Density | Area |
 #   then, for each selected product:  Sold  (+ Expected, where a rule exists)
 #
+#   Area     = the farm's "Area" value stored in Customer List.xlsx.
 #   Sold     = Quantity sold (matched on the farm's Customer Code and the
 #              product's Item Description) ON or AFTER the date 10 days
 #              before the farm's Cycle Started Date (older purchases are
@@ -1071,20 +1072,26 @@ def _nc_farm_ponds(cust, farm, cap):
     return _out
 
 def _nc_area_for(cust, farm):
-    """Area of a farm from the main sheet's 'Area' column (all distinct
-    non-blank values, or the sum if every value is numeric)."""
-    if "Area" not in _latest_per_pond.columns:
+    """Area of a farm, taken from the 'Area' column of Customer List.xlsx
+    (matched on Customer Name + Farm Name with Code). Returns the first
+    non-blank Area value found for that farm; numeric values are shown
+    without trailing zeros. Blank if the column or value doesn't exist."""
+    if "Area" not in customer_df.columns:
         return ""
-    _g = _latest_per_pond[
-        (_latest_per_pond["Customer"] == cust) & (_latest_per_pond["Farm Name with Code"] == farm)
+    _g = customer_df[
+        (customer_df["Customer Name"] == cust) & (customer_df["Farm Name with Code"] == farm)
     ]
-    _vals = [str(v).strip() for v in _g["Area"] if str(v).strip() and str(v).strip().lower() != "nan"]
-    if not _vals:
-        return ""
-    _nums = pd.to_numeric(pd.Series(_vals), errors="coerce")
-    if _nums.notna().all():
-        return f"{_nums.sum():,.2f}".rstrip("0").rstrip(".")
-    return ", ".join(dict.fromkeys(_vals))
+    for _v in _g["Area"]:
+        if pd.isna(_v):
+            continue
+        _s = str(_v).strip()
+        if not _s or _s.lower() == "nan":
+            continue
+        _num = pd.to_numeric(pd.Series([_s]), errors="coerce").iloc[0]
+        if pd.notna(_num):
+            return f"{_num:,.2f}".rstrip("0").rstrip(".")
+        return _s
+    return ""
 
 def _nc_full_date(prow):
     """Full Harvest date of a pond (NaT if the pond is not Full Harvested)."""
@@ -1378,6 +1385,7 @@ else:
         f"scaled to its Density ÷ {_NC_BASE_DENSITY:,}, summed over the farm's ponds; shown only for products "
         "that have an expected-quantity rule. Cycle Started Date = oldest pond start = latest record Date − DOC. "
         "Stocking Density = sum of each pond's latest saved Density (Full H ponds included). "
+        "Area = the farm's Area from 'Customer List.xlsx'. "
         "Ponds already Full Harvested before the 'From' date are not used for Expected."
     )
     with st.expander("🔍 Sales lines behind the Sold columns (counted and not counted)"):
